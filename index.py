@@ -1,10 +1,11 @@
 # Adapted from https://github.com/facebookresearch/contriever/blob/main/src/index.py
 import os
 import pickle
-from typing import List, Tuple
+from typing import List, Tuple, Optional, Union
 import logging
 
 import faiss
+import torch
 import numpy as np
 from tqdm import tqdm
 
@@ -48,7 +49,7 @@ class Indexer(object):
         query_vectors = query_vectors.astype(self.dtype)
         result = []
         nbatch = (len(query_vectors)-1) // index_batch_size + 1
-        for k in tqdm(range(nbatch), desc="searching knn"):
+        for k in tqdm(range(nbatch), desc="searching knn", disable=nbatch<5):
             start_idx = k*index_batch_size
             end_idx = min((k+1)*index_batch_size, len(query_vectors))
             q = query_vectors[start_idx: end_idx]
@@ -82,3 +83,97 @@ class Indexer(object):
 
     def _update_id_mapping(self, db_ids: List):
         self.index_id_to_db_id.extend(db_ids)
+
+
+class DenseIndex():
+    """
+    This is essentially a wrapper around the Indexer class with the encoding functionality built in
+    """
+    def __init__(
+        self, 
+        encoder, # expects to be a retriever.Retriever obj
+        dtype: str = "float16",
+        index_batch_size: int = 2048,
+        n_subquantizers: int = 0,
+        n_bits: int = 8,
+    ):
+        self.encoder = encoder 
+        self.hidden_size = self.encoder.hidden_size
+
+        self.torch_dtype = dtype if dtype in ["auto", None] else getattr(torch, dtype)
+        self.dtype = dtype
+        self.index_batch_size = index_batch_size
+
+        # add quantization support here
+        self.index = Indexer(
+            dtype=dtype, 
+            vector_sz=self.hidden_size, 
+            n_subquantizers=n_subquantizers,
+            n_bits=n_bits,
+        )
+
+
+    def build_index(
+        self, 
+        data: Optional[List[str]] = None, 
+        ids: Optional[List[str]] = None,
+        emb_files: Optional[Union[List[str], str]] = None, 
+        prompt: str = "",
+    ) -> None:
+        """
+        Build the index, either from the data or from the embeddings files
+        """
+        if emb_files is not None:
+            logger.info("Building index from embeddings files")
+            # self.index = Indexer(vector_sz=self.hidden_size) # do we want to reset the index here? 
+            if isinstance(emb_files, str):
+                emb_files = [emb_files]
+            for file in emb_files:
+                with open(file, "rb") as f:
+                    ids, emb = pickle.load(f)
+                    self.index.index_data(ids, emb)
+        else:
+            assert data is not None and ids is not None
+            logger.info("Building index from data")
+            emb = self.encode(data, prompt=prompt)
+            self.index.index_data(ids, emb)
+        logger.info("Index built, moving to GPU")
+        self.index.to_gpu()
+    
+    
+    @property
+    def index_size(self) -> int:
+        return self.index.index.ntotal
+
+
+    def reset_index(self) -> None:
+        """
+        Reset the index of the retriever
+        """
+        del self.index
+        self.index = Indexer(vector_sz=self.hidden_size)
+    
+
+    def get_topk(
+        self, 
+        queries: Optional[Union[List[str], str]] = None, 
+        query_prompt:str = "", 
+        query_emb: Optional[np.array] = None,
+        topk: int = 10,
+    ) -> List[Tuple[List[object], np.array]]:
+        """
+        Get the tok k results for the queries. If query_emb is provided, queries must be None
+        
+        Returns a list of tuples containing the external ids and scores of the top documents
+        """
+
+        if query_emb is not None:
+            assert queries is None, "queries must be None if query_emb is provided"
+            q_emb = query_emb
+        else:
+            if isinstance(queries, str):
+                queries = [queries]
+            q_emb = self.encode(queries, prompt=query_prompt)
+
+        results = self.index.search_knn(q_emb, top_docs=topk, index_batch_size=self.index_batch_size)
+        return results

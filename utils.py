@@ -7,6 +7,7 @@ import string
 import time
 import numpy as np
 import torch
+from typing import Tuple
 
 import logging
 logger = logging.getLogger(__name__)
@@ -44,13 +45,21 @@ def mean_pooling(token_embeddings, mask):
 
 
 def cls_pooling(token_embeddings, mask):
-    return token_embeddings[:, 0]
+    # first token where mask is 1
+    indices = mask.argmax(1)
+    return token_embeddings[torch.arange(token_embeddings.size(0)), indices]
 
 
 def max_pooling(token_embeddings, mask):
     token_embeddings = token_embeddings.masked_fill(~mask[..., None].bool(), float('-inf'))
     sentence_embeddings, _ = token_embeddings.max(dim=1)
     return sentence_embeddings
+
+
+def last_token_pooling(token_embeddings, mask):
+    # find the last index of the mask (last occurance of a 1)
+    indices = mask.size(1) - 1 - torch.fliplr(mask).argmax(dim=1)
+    return token_embeddings[torch.arange(token_embeddings.size(0)), indices]
 
 
 def normalize_answer(s):
@@ -71,8 +80,9 @@ def normalize_answer(s):
     return white_space_fix(remove_articles(remove_punc(lower(s))))
 
 
-def drqa_metric_max_over_ground_truths(metric_fn, prediction, ground_truths):
-    """Given a prediction and multiple valid answers, return the score of
+def drqa_metric_max_over_ground_truths(metric_fn, prediction, ground_truths) -> int:
+    """
+    Given a prediction and multiple valid answers, return the score of
     the best prediction-answer_n pair given a metric function.
     """
     # ground truth could be a string or a list of strings or a list of list of strings
@@ -88,6 +98,6 @@ def drqa_metric_max_over_ground_truths(metric_fn, prediction, ground_truths):
     return max(scores_for_ground_truths)
 
 
-def shard_idx(size, num_shards, shard_id):
+def get_shard_idx(size: int, num_shards: int, shard_id: int) -> Tuple[int, int]:
     shard_indices = np.linspace(0, size, num_shards+1, endpoint=True).astype(int)
     return shard_indices[shard_id], shard_indices[shard_id+1]

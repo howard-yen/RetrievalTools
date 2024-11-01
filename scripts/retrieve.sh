@@ -51,29 +51,37 @@ fi
 # You can use srun to run multiple scripts in the same job in parallel (make sure to use & at the end!). Note how you can specify the resources used for each srun and make them exclusive using the --exclusive flag.
 #srun --gres=gpu:1 -n 1 --mem=24G --exclusive python scripts/train_model.py --model_type ${model} --learning_rate ${lr} --rnn_dropout ${dropout} --checkpoint_path ${OUT_DIRECTORY}/${model}.lr${lr}.dim${dim}.dropout${dropout}.pt --rnn_wordvec_dim ${dim} --rnn_num_layers 2  --tags ${tag} &
 
-OFILES=("alpaca_eval" "wild_bench" "arena_hard")
-OUTPUT_FILE="outputs/gte-large-en-v1.5/${OFILES[$IDX]}_v1_dclm_500.jsonl"
-EMB_FILES="embeddings/gte-large-en-v1.5/dclm_baseline_[0-4]*.pkl"
-#EMB_FILES="embeddings/gte-large-en-v1.5/fineweb_edu/fineweb_edu_*.pkl"
-
-QUERY_FIELD="instruction"
-DATASETS=("alpaca_eval" "wild_bench" "/scratch/gpfs/hyen/p-open-ended-retrieval/arena-hard-browser/data/arena-hard-v0.1/question.jsonl")
-DATASET="${DATASETS[$IDX]}"
-
 MODEL="Alibaba-NLP/gte-large-en-v1.5"
+#MODEL="/scratch/gpfs/DANQIC/models/gte-Qwen2-1.5B-instruct"
+
+AP="data/alpaca_eval/alpaca_eval"
+WB="data/wild_bench/wild_bench"
+AH="data/arena_hard/arena_hard"
+
+DATASETS="${AP}_davinci_query.jsonl,${AP}_gpt4o_query.jsonl,${AP}_instruction_query.jsonl,${WB}_all_turns_query.jsonl,${WB}_gpt4_query.jsonl,${WB}_intent_query.jsonl,${WB}_last_turn_query.jsonl,${AH}_gpt4o_query.jsonl,${AH}_last_turn_query.jsonl,/scratch/gpfs/hyen/data/simpleqa/simple_qa_test_set.csv"
+QUERIES="query,query,query,query,query,query,query,query,query,problem"
+OUTPUT_DIR="outputs/$(basename $MODEL)"
+OUTPUTS="$OUTPUT_DIR/alpaca_eval_davinci_query.jsonl,$OUTPUT_DIR/alpaca_eval_gpt4o_query.jsonl,$OUTPUT_DIR/alpaca_eval_instruction_query.jsonl,$OUTPUT_DIR/wild_bench_all_turns_query.jsonl,$OUTPUT_DIR/wild_bench_gpt4_query.jsonl,$OUTPUT_DIR/wild_bench_intent_query.jsonl,$OUTPUT_DIR/wild_bench_last_turn_query.jsonl,$OUTPUT_DIR/arena_hard_gpt4o_query.jsonl,$OUTPUT_DIR/arena_hard_last_turn_query.jsonl,$OUTPUT_DIR/simple_qa_test_set.jsonl"
+
+EMB_FILES="embeddings/gte-large-en-v1.5/dclm_baseline_[0-4]*.pkl"
+EMB_FILES="embeddings/gte-large-en-v1.5/fineweb_edu/fineweb_edu_*.pkl"
+
 TOPK=100
 
-echo "Dataset               = $DATASET"
-echo "Output file           = $OUTPUT_FILE"
+echo "Dataset               = $DATASETS"
+echo "Emb                   = $EMB_FILES"
+echo "Output file           = $OUTPUTS"
 
 python passage_retrieval.py \
     --model_name_or_path $MODEL \
     --embeddings "$EMB_FILES" \
-    --dataset $DATASET \
-    --query_field $QUERY_FIELD \
-    --output_file $OUTPUT_FILE \
+    --dataset $DATASETS \
+    --query_field $QUERIES \
+    --output_file $OUTPUTS \
     --topk $TOPK \
-    --query_max_length 8192
+    --query_max_length 8192 \
+    --encode_batch_size 32 \
+    --index_batch_size 8192
 
 wait;
 

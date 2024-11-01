@@ -1,14 +1,18 @@
 import os
 import json
 
-from typing import Optional, List, Union
-
 from pathlib import Path
+from typing import Optional, List, Union
+from dataclasses import dataclass
+
+import numpy as np
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
+from transformers import PreTrainedTokenizerBase
+
+from torch.utils.data import Dataset, DataLoader
 
 from datatools import load
-from multiprocessing import Pool
 
 import logging
 logger = logging.getLogger(__name__)
@@ -28,9 +32,13 @@ class Corpus():
      - support for no chunking
     """
     
-    def __init__(self, *paths: List[Union[Path, str]], num_workers: int = 8, count_only: bool = False):
+    def __init__(self, *paths: List[Union[Path, str]], chunk_size=256, num_workers: int = 8, count_only: bool = False):
         # this defines the number of words in each chunk, should not change it after the index is built
-        self.CHUNK_SIZE = 512
+        self.chunk_size = chunk_size
+
+        # if a chunk is less than this, and it's left at the end, we exclude it 
+        self.threshold_chunk_size = 32 
+
         self.field = "text"
 
         self.paths = set()
@@ -71,28 +79,36 @@ class Corpus():
 
     def process_text(self, text: str):
         paragraphs = text.split("\n")
-        paragraphs = [x for x in paragraphs if x]
+        paragraphs = [x+"\n" for x in paragraphs if x]
 
         # now break each paragraph into chunks of at most CHUNK_SIZE words
         chunks = []
         for p in paragraphs:
             words = p.split(" ")
-            for i in range(0, len(words), self.CHUNK_SIZE):
-                lens = len(words[i:i+self.CHUNK_SIZE])
-                chunks.append((" ".join(words[i:i+self.CHUNK_SIZE]), lens))
+            for i in range(0, len(words), self.chunk_size):
+                length = len(words[i:i+self.chunk_size])
+                chunks.append((" ".join(words[i:i+self.chunk_size]), length))
         
         # now combine chunks that are fewer than CHUNK_SIZE words if possible
         combined_chunks = []
         cur_chunk = []
         cur_len = 0
         for c in chunks:
-            if cur_len + c[1] > self.CHUNK_SIZE:
-                combined_chunks.append(" ".join(cur_chunk))
+            if cur_len + c[1] > self.chunk_size:
+                if cur_len >= self.threshold_chunk_size:
+                    # discard the current chunk if it is too short 
+                    # (this happens in cases where there is a long paragraph with a couple words left over, and then next paragraph is too long)
+                    combined_chunks.append(" ".join(cur_chunk))
+
                 cur_chunk = [c[0]]
                 cur_len = c[1]
             else:
                 cur_chunk.append(c[0])
                 cur_len += c[1]
+        
+        # add the last chunk if it is not too short
+        if cur_len >= self.threshold_chunk_size:
+            combined_chunks.append(" ".join(cur_chunk))
 
         return combined_chunks
 
@@ -133,3 +149,34 @@ class Corpus():
     
     def get_chunks(self):
         return self.chunks
+
+
+class CorpusDataset(Dataset):
+    def __init__(self, texts, tokenizer, ctx_size, prompt=""):
+        self.texts = texts
+        self.tokenizer = tokenizer
+        self.ctx_size = ctx_size
+        self.prompt = prompt
+        
+    def __len__(self):
+        return len(self.texts)
+    
+    def __getitem__(self, idx):
+        return self.tokenizer(self.prompt + self.texts[idx], truncation=True, max_length=self.ctx_size)
+
+@dataclass
+class LengthSortedCollator:
+    tokenizer: PreTrainedTokenizerBase
+    mini_batch_size: int = 32
+    
+    def __call__(self, batch):
+        # we have a list of dict from above, we first sort them by length (keeping the original indices) and then collate them into smaller batches
+        lengths = [-len(x["input_ids"]) for x in batch]
+        length_sorted_idx = np.argsort(lengths)
+        batch_sorted = [batch[i] for i in length_sorted_idx]
+
+        mini_batches = [
+            self.tokenizer.pad(batch_sorted[i:i+self.mini_batch_size], padding="longest", return_tensors="pt") 
+            for i in range(0, len(batch_sorted), self.mini_batch_size)
+        ]
+        return mini_batches, length_sorted_idx

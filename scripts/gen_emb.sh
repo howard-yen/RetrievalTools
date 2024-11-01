@@ -6,7 +6,7 @@
 
 # Give your job a name, so you can recognize it in the queue overview
 #SBATCH --job-name=emb ## CHANGE JOBNAME HERE
-#SBATCH --array=99
+#SBATCH --array=0-399%50
 
 # Remove one # to uncommment
 #SBATCH --output=./joblog/%x-%A_%a.out                          ## Stdout
@@ -15,11 +15,12 @@
 # Define, how many nodes you need. Here, we ask for 1 node.
 #SBATCH -N 1                                        ##nodes
 #SBATCH -n 1                                        ##tasks
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=512G
-#SBATCH --time=0-24:00:00
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=128G
+#SBATCH --time=0-4:30:00
 #SBATCH -x "della-i14g[1-20]"
-#SBATCH --gres=gpu:8
+#SBATCH -x /home/tianyug/pli_node_k
+#SBATCH --gres=gpu:1
 # Turn on mail notification. There are many possible self-explaining values:
 # NONE, BEGIN, END, FAIL, ALL (including all aforementioned)
 # For more values, check "man sbatch"
@@ -39,7 +40,8 @@ echo "Array Task ID                  = $SLURM_ARRAY_TASK_ID"
 echo "Cache                          = $TRANSFORMERS_CACHE"
 
 # mamba init
-mamba activate f1
+#mamba activate f1
+mamba activate xform
 
 IDX=$SLURM_ARRAY_TASK_ID
 if [[ -z $IDX ]]; then
@@ -54,20 +56,27 @@ fi
 # data_path="/scratch/gpfs/hyen/data/kilt/psgs_w100.tsv"
 # data_path="/scratch/gpfs/hyen/data/kilt/kilt_wikipedia.jsonl"
 CORPUS="/scratch/gpfs/DANQIC/awettig/data/dclm-baseline-1.0/*/*/*.jsonl.zstd"
-PREFIX="dclm_baseline"
-CORPUS="/scratch/gpfs/DANQIC/awettig/data/fineweb-edu/sample/350BT/*.parquet"
-PREFIX="fineweb_edu"
+PREFIX="dclm_baseline_256"
+N=1600
 
-MODEL="Alibaba-NLP/gte-large-en-v1.5"
+CORPUS="/scratch/gpfs/DANQIC/awettig/data/fineweb-edu/sample/350BT/*.parquet"
+PREFIX="fineweb_edu_256"
+N=400
+
+#MODEL="Alibaba-NLP/gte-large-en-v1.5"
+MODEL="/scratch/gpfs/DANQIC/models/gte-Qwen2-1.5B-instruct"
+
 OUTPUT_DIR="embeddings/$(basename $MODEL)/$PREFIX"
 
+# should also use the hf implementation!!
 python generate_passage_embeddings.py \
     --output_prefix $PREFIX \
     --model_name_or_path $MODEL \
     --output_dir $OUTPUT_DIR \
     --corpus "$CORPUS" \
     --passage_max_length 8192 \
-    --shard_id $IDX --num_shards 100 --per_gpu_batch_size 32 --num_workers 16
+    --corpus_chunk_size 256 \
+    --shard_id $IDX --num_shards $N --per_gpu_batch_size 64 --num_workers 16 --use_hf
 
 wait;
 

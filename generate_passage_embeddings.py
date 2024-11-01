@@ -14,25 +14,23 @@ from utils import init_logger
 from retriever import load_retriever
 from data import Corpus
 
+from utils import get_shard_idx
+
 import logging
 logger = logging.getLogger(__name__)
 
 
 def load_data(corpus: str, shard_id: int, num_shards: int):
     is_file = os.path.isfile(corpus)
+    # a limitation of our current implementation is that if there are not many files, then the shards may be uneven.
+    # for example, there are 450 files, but we want to parallelize over 400 shards, then some shards would have 1 file while others have 2.
     if not is_file:
         # expect a glob expression and shard on the file level
         all_files = sorted(glob(corpus))
         assert len(all_files) > 0, f"No files found with {corpus}"
         assert num_shards <= len(all_files), f"Number of shards {num_shards} is greater than number of files {len(all_files)}"
 
-        # TODO: replace the logic with utils.shard_idx
-        shard_size = len(all_files) // num_shards
-        start_idx = shard_id * shard_size
-        end_idx = start_idx + shard_size
-        if shard_id == num_shards - 1:
-            end_idx = len(all_files)
-        
+        start_idx, end_idx = get_shard_idx(len(all_files), num_shards, shard_id) 
         data = Corpus(*all_files[start_idx:end_idx])
         chunks = data.get_chunks()
         ids, texts = list(chunks.keys()), list(chunks.values())
@@ -43,12 +41,7 @@ def load_data(corpus: str, shard_id: int, num_shards: int):
         chunks = data.get_chunks()
         ids, texts = list(chunks.keys()), list(chunks.values())
 
-        shard_size = len(chunks) // num_shards
-        start_idx = shard_id * shard_size
-        end_idx = start_idx + shard_size
-        if shard_id == num_shards - 1:
-            end_idx = len(chunks)
-        
+        start_idx, end_idx = get_shard_idx(len(ids), num_shards, shard_id)
         ids = ids[start_idx:end_idx]
         texts = texts[start_idx:end_idx]
 
@@ -57,7 +50,7 @@ def load_data(corpus: str, shard_id: int, num_shards: int):
 
 def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
-    save_file = os.path.join(args.output_dir, f"{args.output_prefix}_{args.shard_id:03d}.pkl")
+    save_file = os.path.join(args.output_dir, f"{args.output_prefix}_{args.shard_id:04d}.pkl")
     if os.path.exists(save_file):
         logger.info(f"File {save_file} already exists, skipping.")
         return
@@ -83,6 +76,8 @@ if __name__ == "__main__":
     parser.add_argument("--config", type=str, default=None, help="Path to the config file")
 
     parser.add_argument("--corpus", type=str, default=None, help="Path to corpus (.tsv or .jsonl file or a directory with shards with a glob expression)")
+    parser.add_argument("--corpus_chunk_size", type=int, default=256, help="Corpus chunk size")
+
     parser.add_argument("--output_dir", type=str, default="wikipedia_embeddings", help="dir path to save embeddings")
     parser.add_argument("--output_prefix", type=str, default="passages", help="output path prefix to save embeddings")
     parser.add_argument("--shard_id", type=int, default=0, help="Id of the current shard")
