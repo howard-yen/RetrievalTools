@@ -6,7 +6,7 @@
 
 # Give your job a name, so you can recognize it in the queue overview
 #SBATCH --job-name=anno ## CHANGE JOBNAME HERE
-#SBATCH --array=0
+#SBATCH --array=0-99
 
 # Remove one # to uncommment
 #SBATCH --output=./joblog/%x-%A_%a.out                          ## Stdout
@@ -15,7 +15,7 @@
 # Define, how many nodes you need. Here, we ask for 1 node.
 #SBATCH -N 1                                        ##nodes
 #SBATCH -n 1                                        ##tasks
-#SBATCH --cpus-per-task=64
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=128G
 #SBATCH --time=0-24:00:00
 #SBATCH -x "della-i14g[1-20]"
@@ -44,6 +44,7 @@ mamba activate faiss
 IDX=$SLURM_ARRAY_TASK_ID
 if [[ -z $IDX ]]; then
     IDX=0
+    SLURM_CPUS_PER_TASK=1
     echo "IDX = $IDX"
 fi
 
@@ -55,15 +56,12 @@ MODEL="Alibaba-NLP/gte-large-en-v1.5"
 MODEL="/scratch/gpfs/DANQIC/models/gte-Qwen2-1.5B-instruct"
 
 OUTPUT_DIR="outputs/$(basename $MODEL)/fineweb_edu_256_k1000"
-OUTPUTS="$OUTPUT_DIR/alpaca_eval_inst_query.jsonl,$OUTPUT_DIR/alpaca_eval_gpt4o_query.jsonl,$OUTPUT_DIR/alpaca_eval_inst_gpt4o_query.jsonl,$OUTPUT_DIR/wild_bench_all_turns_query.jsonl,$OUTPUT_DIR/wild_bench_gpt4_query.jsonl,$OUTPUT_DIR/wild_bench_intent_query.jsonl,$OUTPUT_DIR/wild_bench_last_turn_query.jsonl,$OUTPUT_DIR/wild_bench_inst_gpt4_query.jsonl,$OUTPUT_DIR/arena_hard_gpt4o_query.jsonl,$OUTPUT_DIR/arena_hard_inst_query.jsonl,$OUTPUT_DIR/arena_hard_inst_gpt4o_query.jsonl,$OUTPUT_DIR/simple_qa_test_set.jsonl"
+FILE="$OUTPUT_DIR/uf_inst_query.jsonl"
 
-OUTPUTS="$OUTPUT_DIR/alpaca_eval_gpt4o_genquery.jsonl,$OUTPUT_DIR/alpaca_eval_llama8b_genquery.jsonl,$OUTPUT_DIR/arena_hard_gpt4o_genquery.jsonl,$OUTPUT_DIR/arena_hard_llama8b_genquery.jsonl"
-OUTPUTS="$OUTPUT_DIR/uf_inst_query.jsonl"
+SHARD_NUM=100
+SHARD_ID=$IDX
 
-FILES=(${OUTPUTS//,/ })
-FILE="${FILES[$IDX]}"
-
-python text_annotation.py --data_file $FILE --deduplicate --deduplicate_threshold 0.9 --topk 1000 --num_proc $SLURM_CPUS_PER_TASK
+python text_annotation.py --data_file $FILE --deduplicate --deduplicate_threshold 0.9 --topk 1000 --num_proc $SLURM_CPUS_PER_TASK --num_shards $SHARD_NUM --shard_id $SHARD_ID
 
 
 wait;
