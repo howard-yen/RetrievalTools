@@ -2,20 +2,33 @@
 
 This repository contains a collection of useful retrieval tools, inspired by previous codebases, such as [Contriever](https://github.com/facebookresearch/contriever).
 The main difference from previous repos like Contriever and DPR-Scale is the additional support for different types of retrievers like BM25, SentenceTransformers, and API calls. 
-We also minimize the amount of extra scaffolding, such as Hydra configurations, to make the codebase more accessible to newcomers.
+<!-- We also minimize the amount of extra scaffolding, such as Hydra configurations, to make the codebase more accessible to newcomers. -->
 The goal of this repository is to provide a simple, easy-to-use, and efficient codebase for retrieval tasks.
 
 We support the following operations:
- - Building dense indices with sharding
- - Retrieving across sharded dense indices on GPUs and merging the results efficiently
+ - Building large-sclae dense indices with sharding
+ - Retrieving across sharded dense indices on GPUs and merging the results
  - Common API for different retrieval models (e.g., BM25, SentenceTransformers, API calls)
- - Retrieval-from-context with different chunking stratgies
+ <!-- - Retrieval-from-context with different chunking stratgies -->
 
 The code is especially customized towards a slurm-based cluster, and we optimize for easy paralleization and efficient memory usage.
-This can be useful for large-scale retrieval tasks, where we might want to annotate a pre-training scale corpus with retrieval results (as was done in our previous paper [CEPE](https://arxiv.org/abs/2402.16617)).
+This can be useful for large-scale retrieval tasks, where we might want to annotate a pre-training scale corpus with retrieval results.
 We also provide a simple API for playing around with different retrieval models by enabling serving indices.
 
+> [!NOTE]
+> This repository is still under development, please be patient as I'm working on adding more features and improving the documentation! Check the TODOs section for more information.
+
+
 ## Installation
+
+We use FAISS to support different types of dense indices; however, it can be tricky to get the environment exactly right.
+In practice, I find it easier to use a separate conda environment specifically for running FAISS GPU.
+
+### Without FAISS
+
+For simple encoding, you may not need FAISS, and you can install all packages 
+
+### FAISS
 
 To install the package, you should set up a conda environment and install PyTorch and FAISS (guide [here](https://github.com/facebookresearch/faiss/blob/main/INSTALL.md)).
 Additionally, you should install `transformers` and `sentence-transformers`.
@@ -30,6 +43,10 @@ For smaller corpora (e.g., Wikipedia which has ~20M passages), we do not need to
 ### Large Corpora 
 
 When building a large retrieval corpus (>100M documents or >100B tokens), it is often necessary to shard the corpus and parallelize the encoding process.
+
+## TODOs
+
+- [] Save passage text instead of loading from file
 
 ## Contact
 
