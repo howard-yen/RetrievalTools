@@ -1,6 +1,7 @@
 .*.swp
 .*.swo
 output/
+outputs/
 env/
 embeddings/
 *_env/

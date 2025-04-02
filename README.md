@@ -18,6 +18,15 @@ We also provide a simple API for playing around with different retrieval models 
 > [!NOTE]
 > This repository is still under development, please be patient as I'm working on adding more features and improving the documentation! Check the TODOs section for more information.
 
+## Overview
+
+### Key Classes
+
+- `Encoder`: Fast encoding with dense models
+- `Corpus`: A collection of documents with ids, text, and other metadata
+- `Index`: A dense index that supports vector search with FAISS
+- `Retriever`: A retrieval model that supports different retrieval models
+
 
 ## Installation
 
@@ -26,23 +35,43 @@ In practice, I find it easier to use a separate conda environment specifically f
 
 ### Without FAISS
 
-For simple encoding, you may not need FAISS, and you can install all packages 
+For simple encoding, you may not need FAISS, and you can install all packages with:
+
+```bash
+pip install -r requirements.txt
+```
+
+You should install `torch` following [these instructions](https://pytorch.org/get-started/locally/) to match your CUDA version.
 
 ### FAISS
 
+FAISS is critical for the retrieval step if you are using a dense index; it is responsible for fast indexing and supports many useful functions (e.g., quantization, multi-gpu index, etc.).
 To install the package, you should set up a conda environment and install PyTorch and FAISS (guide [here](https://github.com/facebookresearch/faiss/blob/main/INSTALL.md)).
 Additionally, you should install `transformers` and `sentence-transformers`.
 You also want to install `datatools` [here](https://github.com/CodeCreator/datatools).
 
-## Usage
+## Usage Examples
+
+The stages of retrieval are as follows for single-vector dense retrievers (e.g., DPR, Contriever, etc.):
+1. **Embedding the corpus** (`generate_passage_embeddings.py`): Encode the corpus into dense vectors
+2. **Retrieve for queries** (`passage_retrieval.py`): For each query, retrieve the top-k passages from the corpus
+3. **Add text** (`text_annotation.py`): Optionally, add the passage text to the retrieved results if only the passage ids were stored.
+
 
 ### Small Corpora
 
-For smaller corpora (e.g., Wikipedia which has ~20M passages), we do not need to do anything super complicated.
+For smaller corpora (e.g., Wikipedia which has ~20M passages), you may follow these steps, using Wikipedia as an example:
+
+1. **Prepare the corpus**: Put the corpus that you want to encode in file, supported file formats are `.tsv` and `.jsonl`.
+In this example, we use the Wikipedia dump, which can be downloaded from the DPR repository.
+```bash
+wget https://dl.fbaipublicfiles.com/dpr/wikipedia_split/psgs_w100.tsv.gz
+gunzip psgs_w100.tsv.gz
+```
 
 ### Large Corpora 
 
-When building a large retrieval corpus (>100M documents or >100B tokens), it is often necessary to shard the corpus and parallelize the encoding process.
+When building a large retrieval corpus (>500M documents or >100B tokens), it is often necessary to shard the corpus and parallelize the encoding process.
 
 ## TODOs
 
@@ -51,13 +80,3 @@ When building a large retrieval corpus (>100M documents or >100B tokens), it is 
 ## Contact
 
 Please email me at `hyen@cs.princeton.edu` if you run into any issues or have any questions.
-
-<!-- ### A personal note
-
-In my research journey, I have worked on a number of projects that involves retrieval.
-From playing around with DensePhrases in the Sophomore year of college to my subsequent papers---MoQA, ALCE, CEPE, BRIGHT, and HELMET---nearly all of my projects have involved retrieval in some form.
-Throughout this time, I have gotten familiar with many existing tools, and yet I often end up rewriting the same code over and over again.
-Thus, I finally decided to create this repository to consolidate all of my retrieval tools in one place.
-
-This repository is also inspired by my good friend Alex Wettig, who developed [datatools](https://github.com/CodeCreator/datatools), a useful collection of data processing tools. -->
-<!-- Obviously this repo is named after his.  -->

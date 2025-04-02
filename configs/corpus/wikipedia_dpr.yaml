@@ -1,0 +1,11 @@
+# this is the wikipedia 2018 corpus from DPR , split into 100 word passages
+corpus_options:
+  paths:
+    - /scratch/gpfs/hyen/data/gtr_index/psgs_w100.tsv
+  chunk_size: 256
+  threshold_chunk_size: 32
+  text_field: text
+  metadata_field: 
+    - title
+  num_workers: 8
+  corpus_type: normal

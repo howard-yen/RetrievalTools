@@ -1,0 +1,9 @@
+data_options:
+  topk: 1000
+  datasets:
+    - input_path: data/alpaca_eval/alpaca_eval_inst_query.jsonl
+      query_field: query
+    - input_path: data/hle/hle.jsonl
+      query_field: question
+    - input_path: data/gpqa/gpqa_diamond.jsonl
+      query_field: formatted_question

@@ -1,0 +1,9 @@
+corpus_options:
+  paths:
+    - /scratch/gpfs/DANQIC/awettig/data/fineweb-edu/sample/350BT/*.parquet
+  chunk_size: 256
+  threshold_chunk_size: 32
+  text_field: text
+  metadata_fields: ["url"]
+  num_workers: 8
+  corpus_type: chunk

@@ -1,47 +1,44 @@
 # This code is adopted from Contriever: https://github.com/facebookresearch/contriever
 import os
 
-import argparse
 import pickle
 import yaml
 from glob import glob
+from simple_parsing import ArgumentParser
+from dataclasses import asdict
 
-import torch
-import torch.nn.functional as F
+from arguments import ModelOptions, CorpusOptions, ShardOptions
+from utils import init_logger, get_shard_idx
+from encoder import load_encoder
+from data import Corpus, load_corpus
 
-from tqdm import tqdm
-from utils import init_logger
-from retriever import load_retriever
-from data import Corpus
-
-from utils import get_shard_idx
-
-import logging
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
-def load_data(corpus: str, shard_id: int, num_shards: int):
-    is_file = os.path.isfile(corpus)
+def load_data(corpus_options: CorpusOptions, shard_options: ShardOptions):
+    paths = corpus_options.paths
+    assert len(paths) > 0 
+
     # a limitation of our current implementation is that if there are not many files, then the shards may be uneven.
     # for example, there are 450 files, but we want to parallelize over 400 shards, then some shards would have 1 file while others have 2.
-    if not is_file:
-        # expect a glob expression and shard on the file level
-        all_files = sorted(glob(corpus))
-        assert len(all_files) > 0, f"No files found with {corpus}"
-        assert num_shards <= len(all_files), f"Number of shards {num_shards} is greater than number of files {len(all_files)}"
+    # a better approach would be to load the corpus in a streaming fashion, that would be make easy to shard along the passage level 
+    if len(paths) >= shard_options.num_shards:
+        start_idx, end_idx = get_shard_idx(len(paths), shard_options.num_shards, shard_options.shard_id) 
+        corpus_options.paths = paths[start_idx:end_idx]
+        data = load_corpus(corpus_options)
 
-        start_idx, end_idx = get_shard_idx(len(all_files), num_shards, shard_id) 
-        data = Corpus(*all_files[start_idx:end_idx])
-        chunks = data.get_chunks()
+        chunks = data.get_data()
         ids, texts = list(chunks.keys()), list(chunks.values())
         
     else:
-        data = Corpus(corpus)
+        # if there are more shards than paths, then we load everything first and then shard on a passage level 
+        data = load_corpus(corpus_options)
+
         # expect a single and shard within the file
-        chunks = data.get_chunks()
+        chunks = data.get_data()
         ids, texts = list(chunks.keys()), list(chunks.values())
 
-        start_idx, end_idx = get_shard_idx(len(ids), num_shards, shard_id)
+        start_idx, end_idx = get_shard_idx(len(ids), shard_options.num_shards, shard_options.shard_id)
         ids = ids[start_idx:end_idx]
         texts = texts[start_idx:end_idx]
 
@@ -50,58 +47,42 @@ def load_data(corpus: str, shard_id: int, num_shards: int):
 
 def main(args):
     os.makedirs(args.output_dir, exist_ok=True)
-    save_file = os.path.join(args.output_dir, f"{args.output_prefix}_{args.shard_id:04d}.pkl")
-    if os.path.exists(save_file):
+    save_file = os.path.join(args.output_dir, f"{args.output_prefix}_{args.shard_options.shard_id:04d}.pkl")
+    if os.path.exists(save_file) and not args.overwrite:
         logger.info(f"File {save_file} already exists, skipping.")
         return
 
-    ids, texts = load_data(args.corpus, args.shard_id, args.num_shards)
+    ids, texts = load_data(args.corpus_options, args.shard_options)
+    raw_texts = [texts['text'] for texts in texts]
     logger.info(f"Loaded {len(ids)} passages")
-    retriever = load_retriever(
-        args.model_name_or_path, 
-        max_length=args.passage_max_length, 
-        batch_size=args.per_gpu_batch_size,
-        use_hf=args.use_hf,
-    )
+    encoder = load_encoder(args.model_options)
     logger.info("Encoding...")
-    emb = retriever.encode(texts, prompt=args.passage_prompt)
+    emb = encoder.encode(raw_texts, prompt=args.model_options.passage_prompt)
 
     with open(save_file, mode="wb") as f:
-        pickle.dump((ids, emb), f)
+        if args.save_text:
+            pickle.dump((ids, emb, texts), f)
+        else:
+            pickle.dump((ids, emb), f)
     logger.info(f"Saved {len(ids)} passage embeddings to {save_file}")
+
+    # save the corpus args
+    with open(os.path.join(args.output_dir, "corpus_args.yaml"), "w") as f:
+        yaml.dump(asdict(args.corpus_options), f)
+    logger.info(f"Saved corpus args to {os.path.join(args.output_dir, 'corpus_args.yaml')}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default=None, help="Path to the config file")
-
-    parser.add_argument("--corpus", type=str, default=None, help="Path to corpus (.tsv or .jsonl file or a directory with shards with a glob expression)")
-    parser.add_argument("--corpus_chunk_size", type=int, default=256, help="Corpus chunk size")
+    parser = ArgumentParser(add_config_path_arg=True)
+    parser.add_arguments(ModelOptions, dest="model_options")
+    parser.add_arguments(CorpusOptions, dest="corpus_options")
+    parser.add_arguments(ShardOptions, dest="shard_options")
 
     parser.add_argument("--output_dir", type=str, default="wikipedia_embeddings", help="dir path to save embeddings")
     parser.add_argument("--output_prefix", type=str, default="passages", help="output path prefix to save embeddings")
-    parser.add_argument("--shard_id", type=int, default=0, help="Id of the current shard")
-    parser.add_argument("--num_shards", type=int, default=1, help="Total number of shards")
-    parser.add_argument(
-        "--per_gpu_batch_size", type=int, default=512, help="Batch size for the passage encoder forward pass"
-    )
-    parser.add_argument("--passage_max_length", type=int, default=512, help="Maximum number of tokens in a passage")
-    parser.add_argument("--num_workers", type=int, default=8, help="Maximum number of tokens in a passage")
-    parser.add_argument(
-        "--model_name_or_path", type=str, help="path to directory containing model weights and config file"
-    )
-    parser.add_argument("--no_fp16", action="store_true", help="inference in fp32")
-    parser.add_argument("--use_hf", action="store_true", help="use HF instead of SentenceTransformers")
-    # parser.add_argument("--no_title", action="store_true", help="title not added to the passage body")
-    # parser.add_argument("--lowercase", action="store_true", help="lowercase text before encoding")
-    # parser.add_argument("--normalize_text", action="store_true", help="lowercase text before encoding")
-    # parser.add_argument("--normalize_emb", action="store_true", help="normalize the embeddings")
+    parser.add_argument("--save_text", action="store_true", help="save the text and extra metadata to the output file (requires more disk but makes retrieval easier)")
+    parser.add_argument("--overwrite", action="store_true", help="overwrite existing embeddings")
 
-    parser.add_argument("--passage_prompt", type=str, default="", help="text prepended to the passage")
-
-    args = parser.parse_args()
-    config = yaml.safe_load(open(args.config)) if args.config is not None else {}
-    parser.set_defaults(**config)
     args = parser.parse_args()
 
     main(args)

@@ -10,14 +10,14 @@ import torch
 from typing import Tuple
 
 import logging
-logger = logging.getLogger(__name__)
 
-def init_logger(args, stdout_only=False):
+
+def init_logger(name, args=None, stdout_only=False):
     if torch.distributed.is_initialized():
         torch.distributed.barrier()
     stdout_handler = logging.StreamHandler(sys.stdout)
     handlers = [stdout_handler]
-    if not stdout_only:
+    if args is not None and not stdout_only:
         file_handler = logging.FileHandler(filename=os.path.join(args.output_dir, "run.log"))
         handlers.append(file_handler)
     logging.basicConfig(
@@ -26,7 +26,7 @@ def init_logger(args, stdout_only=False):
         format="[%(asctime)s] {%(filename)s:%(lineno)d} %(levelname)s - %(message)s",
         handlers=handlers,
     )
-    return logger
+    return logging.getLogger(name)
 
 
 def get_max_memory():
@@ -61,6 +61,13 @@ def last_token_pooling(token_embeddings, mask):
     indices = mask.size(1) - 1 - torch.fliplr(mask).argmax(dim=1)
     return token_embeddings[torch.arange(token_embeddings.size(0)), indices]
 
+
+POOLING_FUNC = {
+    "mean": mean_pooling,
+    "cls": cls_pooling,
+    "max": max_pooling,
+    "last": last_token_pooling,
+}
 
 def normalize_answer(s):
 
@@ -99,5 +106,10 @@ def drqa_metric_max_over_ground_truths(metric_fn, prediction, ground_truths) -> 
 
 
 def get_shard_idx(size: int, num_shards: int, shard_id: int) -> Tuple[int, int]:
+    # currently, we try to distribute the shards as evenly as possible
+    # this could result in shard sizes like 2 1 2 1 ... 
+    # another approach is to try to make all the shards the same size except for possibly the last one, which could be smaller
+    # that would make the processing time for all but one shard the exact same
     shard_indices = np.linspace(0, size, num_shards+1, endpoint=True).astype(int)
     return shard_indices[shard_id], shard_indices[shard_id+1]
+

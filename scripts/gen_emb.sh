@@ -6,7 +6,7 @@
 
 # Give your job a name, so you can recognize it in the queue overview
 #SBATCH --job-name=emb ## CHANGE JOBNAME HERE
-#SBATCH --array=0-399%50
+#SBATCH --array=300,385-399%50
 
 # Remove one # to uncommment
 #SBATCH --output=./joblog/%x-%A_%a.out                          ## Stdout
@@ -16,8 +16,8 @@
 #SBATCH -N 1                                        ##nodes
 #SBATCH -n 1                                        ##tasks
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=128G
-#SBATCH --time=0-4:30:00
+#SBATCH --mem=100G
+#SBATCH --time=0-12:30:00
 #SBATCH -x "della-i14g[1-20]"
 #SBATCH -x /home/tianyug/pli_node_k
 #SBATCH --gres=gpu:1
@@ -45,7 +45,7 @@ mamba activate xform
 
 IDX=$SLURM_ARRAY_TASK_ID
 if [[ -z $IDX ]]; then
-    IDX=0
+    IDX=1
     echo "IDX = $IDX"
 fi
 
@@ -59,24 +59,40 @@ CORPUS="/scratch/gpfs/DANQIC/awettig/data/dclm-baseline-1.0/*/*/*.jsonl.zstd"
 PREFIX="dclm_baseline_256"
 N=1600
 
-CORPUS="/scratch/gpfs/DANQIC/awettig/data/fineweb-edu/sample/350BT/*.parquet"
-PREFIX="fineweb_edu_256"
-N=400
+# CORPUS="/scratch/gpfs/PLI/hyen/data/dclm-dedup/data/dclm-dedup/*/*.parquet"
+CORPUS="dclm_baseline_dedup"
+PREFIX="dclm_baseline_dedup_256"
+N=8000
+
+#CORPUS="/scratch/gpfs/DANQIC/awettig/data/fineweb-edu/sample/350BT/*.parquet"
+#PREFIX="fineweb_edu_256"
+#N=400
 
 #MODEL="Alibaba-NLP/gte-large-en-v1.5"
-MODEL="/scratch/gpfs/DANQIC/models/gte-Qwen2-1.5B-instruct"
+MODEL="gte-Qwen2-1.5B-instruct"
 
 OUTPUT_DIR="embeddings/$(basename $MODEL)/$PREFIX"
+OUTPUT_DIR="/scratch/gpfs/DANQIC/hyen/embeddings/$(basename $MODEL)/$PREFIX"
+
+python generate_passage_embeddings.py \
+    --config configs/models/$MODEL.yaml configs/corpus/$PREFIX.yaml \
+    --output_dir $OUTPUT_DIR \
+    --output_prefix $PREFIX  \
+    --shard_id $IDX --num_shards $N \
+    --input_max_length 512 \
+    --batch_size 256 \
+    --overwrite --save_text
 
 # should also use the hf implementation!!
-python generate_passage_embeddings.py \
-    --output_prefix $PREFIX \
-    --model_name_or_path $MODEL \
-    --output_dir $OUTPUT_DIR \
-    --corpus "$CORPUS" \
-    --passage_max_length 8192 \
-    --corpus_chunk_size 256 \
-    --shard_id $IDX --num_shards $N --per_gpu_batch_size 64 --num_workers 16 --use_hf
+# python generate_passage_embeddings.py \
+#     --output_prefix $PREFIX \
+#     --model_name_or_path $MODEL \
+#     --output_dir $OUTPUT_DIR \
+#     --corpus "$CORPUS" \
+#     --passage_max_length 8192 \
+#     --corpus_chunk_size 256 \
+#     --shard_id $IDX --num_shards $N \
+#     --per_gpu_batch_size 64 --num_workers 16 --use_hf
 
 wait;
 
