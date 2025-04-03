@@ -102,11 +102,13 @@ def main(args):
 
     logger.info("Loading retriever and index")
     encoder = load_encoder(args.model_options)
+    # initialize without emb files, we will build the index later
     index = DenseIndex(
         encoder=encoder,
         dtype="float16" if not args.index_options.no_fp16 else "float32",
         n_subquantizers=args.index_options.n_subquantizers,
         n_bits=args.index_options.n_bits,
+        batch_size=args.index_options.batch_size,
     )
 
     logger.info("Encoding queries")
@@ -114,8 +116,9 @@ def main(args):
     all_results = [{"scores": [], "ids": [], "texts": []} for _ in range(query_emb.shape[0])]
 
     logger.info("Searching through embeddings")
-    emb_files = glob.glob(args.embeddings)
     total_passages = 0
+    emb_files = args.index_options.embedding_files
+    emb_files = [item for sublist in emb_files for item in glob.glob(sublist) if os.path.isfile(item)]
     tbar = tqdm(emb_files)
     # we first retrieve the topk results from each embedding file before sorting
     # this is to reduce memory usage, but it could be optimized by loading multiple files at a time
@@ -132,7 +135,7 @@ def main(args):
 
             # only keep the topk results after searching through each embedding file
             new_ids = all_results[i]["ids"] + ids
-            new_scores = all_results[i]["scores"] + scores.tolist()
+            new_scores = all_results[i]["scores"] + scores
             topk = np.argsort(-np.array(new_scores))[:args.data_options.topk]
             all_results[i]["ids"] = [new_ids[j] for j in topk]
             all_results[i]["scores"] = [new_scores[j] for j in topk]
@@ -190,7 +193,6 @@ if __name__ == "__main__":
     parser.add_arguments(IndexOptions, dest="index_options")
     parser.add_arguments(RetrievalDataOptions, dest="data_options")
 
-    parser.add_argument("--embeddings", type=str, default=None, help="Glob path to embedding files (expected to be in .pkl with (ids, embeddings, [text optional]) tuples)", required=True)
     parser.add_argument("--overwrite", action="store_true", help="overwrite output path")
     parser.add_argument("--output_dir", type=str, default=None, help="Output directory")
 

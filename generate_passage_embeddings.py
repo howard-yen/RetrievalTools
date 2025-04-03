@@ -26,21 +26,14 @@ def load_data(corpus_options: CorpusOptions, shard_options: ShardOptions):
         start_idx, end_idx = get_shard_idx(len(paths), shard_options.num_shards, shard_options.shard_id) 
         corpus_options.paths = paths[start_idx:end_idx]
         data = load_corpus(corpus_options)
-
-        chunks = data.get_data()
-        ids, texts = list(chunks.keys()), list(chunks.values())
-        
+       
     else:
         # if there are more shards than paths, then we load everything first and then shard on a passage level 
-        data = load_corpus(corpus_options)
-
         # expect a single and shard within the file
-        chunks = data.get_data()
-        ids, texts = list(chunks.keys()), list(chunks.values())
+        data = load_corpus(corpus_options, shard_options=shard_options)
 
-        start_idx, end_idx = get_shard_idx(len(ids), shard_options.num_shards, shard_options.shard_id)
-        ids = ids[start_idx:end_idx]
-        texts = texts[start_idx:end_idx]
+    chunks = data.get_data()
+    ids, texts = list(chunks.keys()), list(chunks.values())
 
     return ids, texts
 

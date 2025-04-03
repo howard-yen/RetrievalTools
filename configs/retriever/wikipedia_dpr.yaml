@@ -1,0 +1,22 @@
+retriever_options:
+  retriever_type: dense
+  include_corpus: false
+  port: 8000
+
+model_options:
+  model_name_or_path: /scratch/gpfs/DANQIC/models/gte-Qwen2-1.5B-instruct
+  # supports upto 32k, but too long can still cause degradation
+  input_max_length: 8192
+  use_hf: true
+  pooling: "last"
+  normalize_embedding: true
+  batch_size: 64
+  passage_prompt: ""
+  query_prompt: "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
+
+index_options:
+  n_subquantizers: 0
+  n_bits: 0
+  batch_size: 2048
+  no_fp16: false
+  embedding_files: [/scratch/gpfs/DANQIC/hyen/embeddings/gte-Qwen2-1.5B-instruct/wikipedia_dpr/wikipedia_dpr_0000.pkl]

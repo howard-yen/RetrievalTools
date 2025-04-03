@@ -1,0 +1,5 @@
+retriever_options:
+  retriever_type: web_search
+
+model_options:
+  model_name_or_path: "idk this should be fixed"

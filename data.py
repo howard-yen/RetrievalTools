@@ -1,22 +1,22 @@
 import os
 import json
-import io
 
 from pathlib import Path
 from typing import Optional, List, Union, Dict, Any, Tuple
 from dataclasses import dataclass
-from contextlib import contextmanager
-import zstandard
 
 import numpy as np
 from tqdm import tqdm
 from tqdm.contrib.concurrent import process_map
 from transformers import PreTrainedTokenizerBase
 
+import datasets
 from torch.utils.data import Dataset, DataLoader
 import datatools
 from datatools.io_utils import zstd_utf8_read_open
-from arguments import CorpusOptions
+
+from arguments import CorpusOptions, ShardOptions
+from utils import get_shard_idx
 
 import logging
 logger = logging.getLogger(__name__)
@@ -33,7 +33,8 @@ class Corpus():
         id_field: str = "id",
         text_field: str = "text", 
         metadata_fields: List[str] = [], 
-        num_workers: int = 8
+        num_workers: int = 8, 
+        shard_options: Optional[ShardOptions] = None
     ):
         assert text_field not in metadata_fields
         assert "text" not in metadata_fields, "text cannot be metadata, reserved for the chunk text"
@@ -42,8 +43,13 @@ class Corpus():
         self.text_field = text_field
         self.metadata_fields = metadata_fields
         self.id_field = id_field
+        self.num_workers = num_workers
 
-        self.data = {}
+        self.data: Dict[str, Dict[str, Any]] = {}
+        if shard_options is not None:
+            self.shard_options = shard_options
+        else:
+            self.shard_options = ShardOptions(num_shards=1, shard_id=0)
 
         if num_workers <= 1:
             mappings = [self.add_path(p) for p in paths]
@@ -56,10 +62,20 @@ class Corpus():
     
     def add_path(self, path: Union[Path, str]):
         data = datatools.load(path)
+        # we support sharding within the file as well in case the file is very large
+        start_idx, end_idx = get_shard_idx(len(data), self.shard_options.num_shards, self.shard_options.shard_id)
         mappings = {}
-        for d in data:
+        if isinstance(data, datasets.Dataset):
+            data = data.select(range(start_idx, end_idx))
+        else:
+            data = data[start_idx:end_idx]
+
+        for idx, d in tqdm(enumerate(data), desc=f"Processing {path}", total=len(data), disable=self.num_workers > 1):
             id = d[self.id_field]
             text = d[self.text_field]
+            # TODO: move the dataset filter somewhere else?
+            if text is None:
+                continue
             metadata = {k: d[k] for k in self.metadata_fields}
             mappings[id] = {"text": text, **metadata}
         return mappings
@@ -105,6 +121,7 @@ class ChunkedCorpus():
         text_field: str = "text",
         metadata_fields: List[str] = [],
         num_workers: int = 8, 
+        shard_options: Optional[ShardOptions] = None,
         count_only: bool = False
     ):
         assert text_field not in metadata_fields
@@ -123,6 +140,11 @@ class ChunkedCorpus():
         self.chunks: Dict[str, Dict[str, Any]] = {}
         self.total_lines: int = 0
         self.total_chunks: int = 0
+
+        if shard_options is not None:
+            self.shard_options = shard_options
+        else:
+            self.shard_options = ShardOptions(num_shards=1, shard_id=0)
 
         self.count_only: bool = count_only
 
@@ -147,7 +169,17 @@ class ChunkedCorpus():
         # mapping maps from id (path/line_idx/chunk_idx) to Dict[str, Any] (text, metadata)
         mappings: Dict[str, Dict[str, Any]] = {}
         num_chunks: int = 0
-        for line_idx, d in enumerate(tqdm(data, leave=False, desc=f"Processing {path}")):
+        start_idx, end_idx = get_shard_idx(len(data), self.shard_options.num_shards, self.shard_options.shard_id)
+
+        if isinstance(data, datasets.Dataset):
+            data = data.select(range(start_idx, end_idx))
+        else:
+            data = data[start_idx:end_idx]
+
+        for line_idx, d in enumerate(tqdm(data, leave=False, desc=f"Processing {path}", total=len(data), disable=self.num_workers > 1)):
+            line_idx += start_idx # we need to offset the line_idx by the start_idx so later access is correct
+            if d[self.field] is None:
+                continue
             chunks = self.process_text(d[self.field])
             chunks = self.add_metadata(d, chunks)
             num_chunks += len(chunks)
@@ -272,7 +304,7 @@ class ChunkedCorpus():
         return self.chunks
 
 
-def load_corpus(corpus_options: CorpusOptions):
+def load_corpus(corpus_options: CorpusOptions, shard_options: Optional[ShardOptions] = None):
     if corpus_options.corpus_type == "chunk":
         return ChunkedCorpus(
             paths=corpus_options.paths,
@@ -280,6 +312,7 @@ def load_corpus(corpus_options: CorpusOptions):
             threshold_chunk_size=corpus_options.threshold_chunk_size,
             text_field=corpus_options.text_field,
             metadata_fields=corpus_options.metadata_fields,
+            shard_options=shard_options,
         )
     else:
         return Corpus(
@@ -287,6 +320,7 @@ def load_corpus(corpus_options: CorpusOptions):
             id_field=corpus_options.id_field,
             text_field=corpus_options.text_field,
             metadata_fields=corpus_options.metadata_fields,
+            shard_options=shard_options,
         )
 
 

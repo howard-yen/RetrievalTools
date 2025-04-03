@@ -82,6 +82,7 @@ class IndexOptions:
     n_bits: int = 8 # Number of bits per subquantizer
     batch_size: int = 2048 # Batch size for index search
     no_fp16: bool = False # Inference in fp32 instead of fp16 (not necessary most times)
+    embedding_files: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -106,3 +107,10 @@ class RetrievalDataOptions:
                 raise ValueError("Query field missing in dataset")
             new_datasets.append(RetrievalDataSingle(**dataset))
         self.datasets = new_datasets
+
+
+@dataclass
+class RetrieverOptions:
+    retriever_type: str = "dense"
+    include_corpus: bool = False
+    port: int = 8000

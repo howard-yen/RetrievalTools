@@ -3,4 +3,4 @@ index_options:
   n_bits: 0
   batch_size: 2048
   no_fp16: false
-
+  embedding_files: []
