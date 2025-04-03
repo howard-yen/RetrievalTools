@@ -115,6 +115,7 @@ class WebSearchRetriever(Retriever):
         
         In Serper, the results contain: "title", "url", "date", "text", "position"
         """
+        from utils import scrape_page_content
         results = []
 
         for query in queries:
@@ -138,6 +139,11 @@ class WebSearchRetriever(Retriever):
             for r in result['organic']:
                 r["text"] = r.pop("snippet")
                 r["url"] = r.pop("link")
+                # scrape the page content, 4000 characters is ~500 tokens? maybe more
+                success, snippet, fulltext = scrape_page_content(r["url"], snippet=r["text"], num_characters=4000)
+                if success:
+                    r["long_snippet"] = snippet
+                    r["full_text"] = fulltext
             outputs.append(result['organic'])
 
         return outputs

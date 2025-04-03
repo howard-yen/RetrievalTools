@@ -3,14 +3,15 @@ import sys
 
 import re
 import string
+import requests
 
 import time
 import numpy as np
 import torch
 from typing import Tuple
 
+from bs4 import BeautifulSoup
 import logging
-
 
 def init_logger(name, args=None, stdout_only=False):
     if torch.distributed.is_initialized():
@@ -113,3 +114,104 @@ def get_shard_idx(size: int, num_shards: int, shard_id: int) -> Tuple[int, int]:
     shard_indices = np.linspace(0, size, num_shards+1, endpoint=True).astype(int)
     return shard_indices[shard_id], shard_indices[shard_id+1]
 
+
+def remove_punctuation(text):
+    # Using a translation table to remove punctuation
+    return text.translate(str.maketrans("", "", string.punctuation))
+
+
+def f1_score(true_set, pred_set):
+    intersection = len(true_set.intersection(pred_set))
+    if not intersection:
+        return 0
+    precision = intersection / float(len(pred_set))
+    recall = intersection / float(len(true_set))
+    return 2 * (precision * recall) / (precision + recall)
+
+
+# adapted from https://github.com/idavidrein/gpqa/blob/56686c06f5e19865c153de0fdb11be3890014df7/baselines/open_book.py#L38
+def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, str, str]:
+    """
+    Try to scrape the page content and return the best snippet that matches the snippet.
+    If no snippet is provided, return the first num_characters of the page.
+    Returns a tuple of (success, snippet, fulltext).
+    """
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+        }
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        soup = BeautifulSoup(response.content, "html.parser")
+
+        # Remove unwanted elements
+        for element in soup.find_all(['script', 'style', 'nav', 'footer', 'iframe']):
+            element.decompose()
+
+        # Keep track of character positions for each element
+        content_elements_with_pos = []
+        current_pos = 0
+        for element in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li']):
+            text = element.text.strip()
+            # Add header markers for better context
+            if element.name.startswith('h'):
+                text = f"[{element.name.upper()}] {text}"
+            
+            # Store the text along with its position information
+            content_elements_with_pos.append({
+                'text': text,
+                'start': current_pos,
+                'end': current_pos + len(text)
+            })
+            current_pos += len(text) + 2  # +2 for the "\n\n" separator
+
+        # Join all text for snippet matching
+        fulltext = "\n\n".join(elem['text'] for elem in content_elements_with_pos)
+        
+        best_sentence = None
+        # find which sentence overlaps with the snippet most in terms of f1 score
+        if snippet is not None:
+            snippet = snippet.lower()
+            # remove punctuation
+            snippet = remove_punctuation(snippet)
+            snippet_words = set(snippet.split())
+            best_f1 = 0
+            sentences = fulltext.split(".")
+            for sentence in sentences:
+                key_sentence = sentence.lower()
+                key_sentence = remove_punctuation(key_sentence)
+                sentence_words = set(key_sentence.split())
+                f1 = f1_score(snippet_words, sentence_words)
+                if f1 > best_f1:
+                    best_f1 = f1
+                    best_sentence = sentence
+
+        success = True
+        if best_sentence is not None:
+            # Find the position of the best matching sentence
+            para_start = fulltext.find(best_sentence)
+            para_end = para_start + len(best_sentence)
+
+            # Find elements that should be included (within 2000 chars before and after)
+            included_elements = []
+            for elem in content_elements_with_pos:
+                # Check if element is within range or contains the best sentence
+                if (elem['start'] >= para_start - num_characters/2 and elem['start'] <= para_end + num_characters/2) or \
+                   (elem['start'] <= para_start and elem['end'] >= para_end):
+                    included_elements.append(elem['text'])
+            
+            return success, "\n\n".join(included_elements), fulltext
+        
+        # If no best sentence, return first few complete elements up to ~4000 chars
+        included_elements = []
+        total_length = 0
+        for elem in content_elements_with_pos:
+            if total_length + len(elem['text']) > num_characters and total_length > 0:
+                break
+            included_elements.append(elem['text'])
+            total_length += len(elem['text']) + 2  # +2 for "\n\n"
+        return success, "\n\n".join(included_elements), fulltext
+
+    except Exception as e:
+        success = False
+        return success, f"Failed to scrape the page due to {str(e)}", ""
