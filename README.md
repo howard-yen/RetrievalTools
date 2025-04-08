@@ -1,4 +1,4 @@
-# <img src="https://github.com/user-attachments/assets/55a90c30-4790-49c7-92f6-b186ec915724" alt="RT" width="30"> RetrievalTools
+# <img src="assets/rt.png" alt="RT" width="30"> RetrievalTools
 
 
 This repository contains a collection of useful retrieval tools, inspired by previous codebases, such as [Contriever](https://github.com/facebookresearch/contriever).

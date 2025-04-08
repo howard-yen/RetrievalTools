@@ -10,7 +10,6 @@ import numpy as np
 import torch
 from typing import Tuple
 
-from bs4 import BeautifulSoup
 import logging
 
 def init_logger(name, args=None, stdout_only=False):
@@ -131,6 +130,7 @@ def f1_score(true_set, pred_set):
 
 # adapted from https://github.com/idavidrein/gpqa/blob/56686c06f5e19865c153de0fdb11be3890014df7/baselines/open_book.py#L38
 def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, str, str]:
+    from bs4 import BeautifulSoup
     """
     Try to scrape the page content and return the best snippet that matches the snippet.
     If no snippet is provided, return the first num_characters of the page.
@@ -140,7 +140,7 @@ def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, s
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
         }
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=(3, 5))  # (connect timeout, read timeout)
         response.raise_for_status()
         soup = BeautifulSoup(response.content, "html.parser")
 
@@ -156,6 +156,9 @@ def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, s
             # Add header markers for better context
             if element.name.startswith('h'):
                 text = f"[{element.name.upper()}] {text}"
+            
+            if len(text) == 0:
+                continue
             
             # Store the text along with its position information
             content_elements_with_pos.append({
@@ -187,7 +190,7 @@ def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, s
                     best_sentence = sentence
 
         success = True
-        if best_sentence is not None:
+        if best_sentence is not None and len(best_sentence) > 0:
             # Find the position of the best matching sentence
             para_start = fulltext.find(best_sentence)
             para_end = para_start + len(best_sentence)
@@ -200,7 +203,11 @@ def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, s
                    (elem['start'] <= para_start and elem['end'] >= para_end):
                     included_elements.append(elem['text'])
             
-            return success, "\n\n".join(included_elements), fulltext
+            final_snippet = "\n\n".join(included_elements)
+            # prevent super long snippets due to parsing errors and such
+            if len(final_snippet) > num_characters*2:
+                final_snippet = final_snippet[:num_characters*2]
+            return success, final_snippet, fulltext
         
         # If no best sentence, return first few complete elements up to ~4000 chars
         included_elements = []
@@ -210,8 +217,12 @@ def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, s
                 break
             included_elements.append(elem['text'])
             total_length += len(elem['text']) + 2  # +2 for "\n\n"
-        return success, "\n\n".join(included_elements), fulltext
+        final_snippet = "\n\n".join(included_elements)
+        if len(final_snippet) > num_characters*2:
+            final_snippet = final_snippet[:num_characters*2]
+        return success, final_snippet, fulltext
 
     except Exception as e:
         success = False
         return success, f"Failed to scrape the page due to {str(e)}", ""
+

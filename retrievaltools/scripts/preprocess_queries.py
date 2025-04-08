@@ -27,7 +27,7 @@ def process_alpaca_eval():
     def get_query(d):
         return {"query": d["instruction"]}
     output_data = data.map(get_query)
-    output_data.to_json(f"data/alpaca_eval/alpaca_eval_instruction_query.jsonl", orient="records", force_ascii=False)
+    output_data.to_json(f"data/alpaca_eval/alpaca_eval_inst_query.jsonl", orient="records", force_ascii=False)
 
     # 2: text_davinci_003
     def get_query(d):
@@ -48,8 +48,8 @@ def process_alpaca_eval():
     def get_query(d):
         return {"query": f"{d['instruction']}\n\n{d['output']}"}
     output_data = data.map(get_query)
-    output_data.to_json(f"data/alpaca_eval/alpaca_eval_gpt4o_query.jsonl", orient="records", force_ascii=False)
-    
+    output_data.to_json(f"data/alpaca_eval/alpaca_eval_inst_gpt4o_query.jsonl", orient="records", force_ascii=False)
+
     print("Alpaca eval done")
 
 
@@ -67,19 +67,26 @@ def process_wild_bench():
     def get_query(d):
         return {"query": "\n\n".join([turn['content'] for turn in d['conversation_input']])}
     output_data = data.map(get_query)
-    output_data.to_json(f"data/wild_bench/wild_bench_all_turns_query.jsonl", orient="records", force_ascii=False)    
+    output_data.to_json(f"data/wild_bench/wild_bench_all_turns_query.jsonl", orient="records", force_ascii=False)
 
     # 3: gpt4
     def get_query(d):
         return {"query": d['references']['gpt-4']}
     output_data = data.map(get_query)
     output_data.to_json(f"data/wild_bench/wild_bench_gpt4_query.jsonl", orient="records", force_ascii=False)
-    
+
     # 4: the intent
     def get_query(d):
         return {"query": d['intent']}
     output_data = data.map(get_query)
     output_data.to_json(f"data/wild_bench/wild_bench_intent_query.jsonl", orient="records", force_ascii=False)
+
+    # 5: instruction + gpt4
+    def get_query(d):
+        turns = "\n\n".join([turn['content'] for turn in d['conversation_input']])
+        return {"query": f"{turns}\n\n{d['references']['gpt-4']}"}
+    output_data = data.map(get_query)
+    output_data.to_json(f"data/wild_bench/wild_bench_inst_gpt4_query.jsonl", orient="records", force_ascii=False)
 
     print("Wild bench done")
 
@@ -87,14 +94,14 @@ def process_wild_bench():
 
 def process_arena_hard():
     os.makedirs("data/arena_hard", exist_ok=True)
-    data = load_dataset("json", data_files="/scratch/gpfs/hyen/p-open-ended-retrieval/arena-hard-browser/data/arena-hard-v0.1/question.jsonl")['train']
+    data = load_dataset("json", data_files="/scratch/gpfs/hyen/p-open-ended-retrieval/arena-hard-auto/data/arena-hard-v0.1/question.jsonl")['train']
 
     # 1: just last turn
     def get_query(d):
         return {"query": d['turns'][-1]['content']}
     output_data = data.map(get_query)
-    output_data.to_json(f"data/arena_hard/arena_hard_last_turn_query.jsonl", orient="records", force_ascii=False)
-    
+    output_data.to_json(f"data/arena_hard/arena_hard_inst_query.jsonl", orient="records", force_ascii=False)
+
     # 2: gpt4o
     with open("/scratch/gpfs/hyen/p-open-ended-retrieval/arena-hard-browser/data/arena-hard-v0.1/model_answer/gpt-4o-2024-05-13.jsonl") as f:
         gpt4o_data = [json.loads(line) for line in f]
@@ -105,10 +112,26 @@ def process_arena_hard():
     output_data = data.map(get_query)
     output_data.to_json(f"data/arena_hard/arena_hard_gpt4o_query.jsonl", orient="records", force_ascii=False)
 
+    # 3: instruction + gpt4o
+    def get_query(d):
+        return {"query": f"{d['turns'][0]['content']}\n\n{gpt4o_data[d['question_id']]}"}
+    output_data = data.map(get_query)
+    output_data.to_json(f"data/arena_hard/arena_hard_inst_gpt4o_query.jsonl", orient="records", force_ascii=False)
+
     print("Arena hard done")
 
 
+def process_ultrafeedback():
+    os.makedirs("data/ultrafeedback", exist_ok=True)
+    data = load_dataset("openbmb/UltraFeedback")['train']
+    #data = data.map(lambda x: {"query": x['instruction']}, remove_columns=['models', 'completions', 'correct_answers', 'incorrect_answers'])
+    output_data = data.map(lambda x: {"query": x['instruction']})
+    output_data.to_json("data/ultrafeedback/uf_inst_query.jsonl", orient="records", force_ascii=False)
+    print("UltraFeedback done")
+
+
 if __name__ == "__main__":
-    process_alpaca_eval()
-    process_wild_bench()
-    process_arena_hard()
+    #process_alpaca_eval()
+    #process_wild_bench()
+    #process_arena_hard()
+    process_ultrafeedback()

@@ -1,6 +1,7 @@
 retriever_options:
   retriever_type: dense
   include_corpus: false
+  host: localhost
   port: 8000
 
 model_options:

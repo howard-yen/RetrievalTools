@@ -8,11 +8,10 @@ from tqdm import trange, tqdm
 from torch.utils.data import DataLoader
 
 from transformers import AutoConfig, AutoModel, AutoTokenizer, DataCollatorWithPadding
-from sentence_transformers import SentenceTransformer
 
-from data import CorpusDataset, LengthSortedCollator
-from utils import POOLING_FUNC, init_logger
-from arguments import ModelOptions
+from retrievaltools.data import CorpusDataset, LengthSortedCollator
+from retrievaltools.utils import POOLING_FUNC, init_logger
+from retrievaltools.arguments import ModelOptions
 
 logger = init_logger(__name__)
 
@@ -69,6 +68,7 @@ class STEncoder(Encoder):
         normalize_embedding: bool = True,
         **model_kwargs,
     ):
+        from sentence_transformers import SentenceTransformer
         super().__init__(model_name_or_path, ctx_size, batch_size, dtype)
         self.model = SentenceTransformer(
             model_name_or_path, 
@@ -177,7 +177,7 @@ class HFEncoder(Encoder):
 
         for batch_idx, (batch, length_idxs) in enumerate(tqdm(dataloader, desc="Encoding")):
             batch_embeddings = []
-            for mini_batch in tqdm(batch, leave=False):
+            for mini_batch in tqdm(batch, leave=False, desc="Mini-batch"):
                 inputs = mini_batch.to(self.model.device)
                 outputs = self.model(**inputs.to(self.model.device))
 
@@ -204,6 +204,7 @@ class HFEncoder(Encoder):
 def load_encoder(
     model_options: ModelOptions,
 ) -> Encoder:
+
     if model_options.use_hf:
         kwargs = {}
         if "gte" in model_options.model_name_or_path:

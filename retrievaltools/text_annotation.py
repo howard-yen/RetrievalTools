@@ -1,7 +1,4 @@
 import os
-import json
-import logging
-from dataclasses import asdict
 from typing import List, Dict
 
 from tqdm import tqdm, trange
@@ -9,8 +6,11 @@ from datasets import load_dataset
 from rouge_score import rouge_scorer
 from simple_parsing import ArgumentParser
 
-from arguments import CorpusOptions, ShardOptions
-from data import Corpus
+from retrievaltools.arguments import CorpusOptions, ShardOptions
+from retrievaltools.data import load_corpus
+from retrievaltools.utils import init_logging
+
+logger = init_logging(__name__)
 
 scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
 def deduplication(ctxs: List[Dict[str, str]], threshold: int = 0.8, k: int = 5) -> List[Dict[str, str]]:
@@ -60,19 +60,20 @@ We add the document texts using the ids from the corpus.
 """
 if __name__ == "__main__":
     parser = ArgumentParser(add_config_path_arg=True)
+    parser.add_arguments(CorpusOptions, dest="corpus_options")
+    parser.add_arguments(ShardOptions, dest="shard_options")
+
     parser.add_argument("--data_file", type=str, required=True, help="Path to the retrieval results file (should be a jsonl file)")
     parser.add_argument("--deduplicate", action="store_true", help="Deduplicate the data, using ROUGE-L")
     parser.add_argument("--deduplicate_threshold", type=float, default=0.9, help="Threshold for deduplication")
     parser.add_argument("--topk", type=int, default=100, help="Threshold for deduplication")
     parser.add_argument("--num_proc", type=int, default=os.cpu_count(), help="Number of processes to use")
-    parser.add_arguments(CorpusOptions, dest="corpus_options")
-    parser.add_arguments(ShardOptions, dest="shard_options")
     args = parser.parse_args()
-    logging.info(args)
+    logger.info(args)
     assert args.data_file.endswith(".jsonl")
 
-    logging.info("Loading corpus, make sure that the corpus settings are the same as the encoding!")
-    corpus = Corpus(**asdict(args.corpus_options))
+    logger.info("Loading corpus, make sure that the corpus settings are the same as the encoding!")
+    corpus = load_corpus(args.corpus_options)
 
     def annotate(example):
         for ctx in tqdm(example['ctxs']):
@@ -86,14 +87,14 @@ if __name__ == "__main__":
     
     out_file = get_output_file(args.data_file, args.shard_options, anot=True)
     if os.path.exists(out_file):
-        logging.info(f"File {out_file} already exists, skipping")
+        logger.info(f"File {out_file} already exists, skipping")
         annotated_data = load_dataset("json", data_files=out_file)['train']
     else:
-        logging.info("Annotating")
+        logger.info("Annotating")
         annotated_data = data.map(annotate, num_proc=args.num_proc, desc="Annotating")
         
         # save the annotated data as a jsonl file
-        logging.info(f"Saving annotated data to {out_file}")
+        logger.info(f"Saving annotated data to {out_file}")
         annotated_data.to_json(out_file, orient="records", force_ascii=False)
 
     if args.deduplicate:
@@ -103,21 +104,21 @@ if __name__ == "__main__":
 
         out_file = get_output_file(args.data_file, args.shard_options, dedup=True)
         if os.path.exists(out_file):
-            logging.info(f"File {out_file} already exists, skipping")
+            logger.info(f"File {out_file} already exists, skipping")
             annotated_data = load_dataset("json", data_files=out_file)['train']
         else:
-            logging.info("Deduplicating")
-            annotated_data= annotated_data.map(dedup, num_proc=args.num_proc, desc="Deduplicating")
+            logger.info("Deduplicating")
+            annotated_data = annotated_data.map(dedup, num_proc=args.num_proc, desc="Deduplicating")
             annotated_data.to_json(out_file, orient="records", force_ascii=False)
     
     # now collect all the shards if possible
     def concat(data_file: str, shard_options: ShardOptions, anot=False, dedup=False) -> bool:
-        logging.info("Concatenating")
+        logger.info("Concatenating")
         for i in trange(shard_options.num_shards, desc="Checking files"):
             shard_options.shard_id = i
             file = get_output_file(data_file, shard_options, anot=anot, dedup=dedup)
             if not os.path.exists(file):
-                logging.info(f"File {file} does not exist, skipping concat")
+                logger.info(f"File {file} does not exist, skipping concat")
                 return False
         
         # a bit hacky...
@@ -132,10 +133,8 @@ if __name__ == "__main__":
                 with open(file) as fin:
                     for line in fin:
                         fout.write(line)
-        logging.info("Written concat to {out_file}")
+        logger.info(f"Written concat to {out_file}")
         return True
 
-    # if concat(args.data_file, args.shard_options, anot=True):
-    #     logging.info("Concatenated annotated data")
     if args.deduplicate and concat(args.data_file, args.shard_options, dedup=True):
-        logging.info("Concatenated annotated and deduplicated data")
+        logger.info("Concatenated annotated and deduplicated data")

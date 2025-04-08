@@ -77,5 +77,6 @@ if __name__ == "__main__":
     parser.add_argument("--overwrite", action="store_true", help="overwrite existing embeddings")
 
     args = parser.parse_args()
+    logger.info(f"args: {args}")
 
     main(args)

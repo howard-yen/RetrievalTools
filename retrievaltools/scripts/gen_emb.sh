@@ -6,7 +6,7 @@
 
 # Give your job a name, so you can recognize it in the queue overview
 #SBATCH --job-name=emb ## CHANGE JOBNAME HERE
-#SBATCH --array=300,385-399%50
+#SBATCH --array=0-499%80
 
 # Remove one # to uncommment
 #SBATCH --output=./joblog/%x-%A_%a.out                          ## Stdout
@@ -15,11 +15,11 @@
 # Define, how many nodes you need. Here, we ask for 1 node.
 #SBATCH -N 1                                        ##nodes
 #SBATCH -n 1                                        ##tasks
-#SBATCH --cpus-per-task=12
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=100G
-#SBATCH --time=0-12:30:00
+#SBATCH --time=0-6:00:00
 #SBATCH -x "della-i14g[1-20]"
-#SBATCH -x /home/tianyug/pli_node_k
+##SBATCH -x /home/tianyug/pli_node_k
 #SBATCH --gres=gpu:1
 # Turn on mail notification. There are many possible self-explaining values:
 # NONE, BEGIN, END, FAIL, ALL (including all aforementioned)
@@ -55,24 +55,26 @@ fi
 
 # data_path="/scratch/gpfs/hyen/data/kilt/psgs_w100.tsv"
 # data_path="/scratch/gpfs/hyen/data/kilt/kilt_wikipedia.jsonl"
-CORPUS="/scratch/gpfs/DANQIC/awettig/data/dclm-baseline-1.0/*/*/*.jsonl.zstd"
-PREFIX="dclm_baseline_256"
-N=1600
 
-# CORPUS="/scratch/gpfs/PLI/hyen/data/dclm-dedup/data/dclm-dedup/*/*.parquet"
-CORPUS="dclm_baseline_dedup"
 PREFIX="dclm_baseline_dedup_256"
-N=8000
+N=500
 
-#CORPUS="/scratch/gpfs/DANQIC/awettig/data/fineweb-edu/sample/350BT/*.parquet"
-#PREFIX="fineweb_edu_256"
-#N=400
+# PREFIX="wikipedia_dpr"
+# PREFIX="wikipedia_kilt"
+# N=10
 
-#MODEL="Alibaba-NLP/gte-large-en-v1.5"
+# PREFIX="fineweb_edu_256"
+# N=250
+
 MODEL="gte-Qwen2-1.5B-instruct"
 
-OUTPUT_DIR="embeddings/$(basename $MODEL)/$PREFIX"
+# OUTPUT_DIR="embeddings/$(basename $MODEL)/$PREFIX"
 OUTPUT_DIR="/scratch/gpfs/DANQIC/hyen/embeddings/$(basename $MODEL)/$PREFIX"
+
+echo "OUTPUT_DIR        = $OUTPUT_DIR"
+echo "MODEL             = $MODEL"
+echo "PREFIX            = $PREFIX"
+echo "IDX               = $IDX / $N"
 
 python generate_passage_embeddings.py \
     --config configs/models/$MODEL.yaml configs/corpus/$PREFIX.yaml \
@@ -81,18 +83,7 @@ python generate_passage_embeddings.py \
     --shard_id $IDX --num_shards $N \
     --input_max_length 512 \
     --batch_size 256 \
-    --overwrite --save_text
-
-# should also use the hf implementation!!
-# python generate_passage_embeddings.py \
-#     --output_prefix $PREFIX \
-#     --model_name_or_path $MODEL \
-#     --output_dir $OUTPUT_DIR \
-#     --corpus "$CORPUS" \
-#     --passage_max_length 8192 \
-#     --corpus_chunk_size 256 \
-#     --shard_id $IDX --num_shards $N \
-#     --per_gpu_batch_size 64 --num_workers 16 --use_hf
+    --save_text
 
 wait;
 

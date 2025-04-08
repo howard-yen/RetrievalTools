@@ -15,11 +15,10 @@ from torch.utils.data import Dataset, DataLoader
 import datatools
 from datatools.io_utils import zstd_utf8_read_open
 
-from arguments import CorpusOptions, ShardOptions
-from utils import get_shard_idx
+from retrievaltools.arguments import CorpusOptions, ShardOptions
+from retrievaltools.utils import get_shard_idx, init_logger
 
-import logging
-logger = logging.getLogger(__name__)
+logger = init_logger(__name__)
 
 
 class Corpus():
@@ -36,9 +35,6 @@ class Corpus():
         num_workers: int = 8, 
         shard_options: Optional[ShardOptions] = None
     ):
-        assert text_field not in metadata_fields
-        assert "text" not in metadata_fields, "text cannot be metadata, reserved for the chunk text"
-
         self.paths = paths
         self.text_field = text_field
         self.metadata_fields = metadata_fields
@@ -51,6 +47,7 @@ class Corpus():
         else:
             self.shard_options = ShardOptions(num_shards=1, shard_id=0)
 
+        self.num_workers = num_workers
         if num_workers <= 1:
             mappings = [self.add_path(p) for p in paths]
         else:
@@ -124,9 +121,6 @@ class ChunkedCorpus():
         shard_options: Optional[ShardOptions] = None,
         count_only: bool = False
     ):
-        assert text_field not in metadata_fields
-        assert "text" not in metadata_fields, "text cannot be metadata, reserved for the chunk text"
-
         # this defines the number of words in each chunk, should not change it after the index is built
         self.chunk_size: int = chunk_size
 
@@ -134,6 +128,14 @@ class ChunkedCorpus():
         self.threshold_chunk_size: int = threshold_chunk_size
         self.field: str = text_field
         self.metadata_fields: List[str] = metadata_fields
+
+        # if text is in the metadata fields, we need to rename it to "full_text", since there may be instances
+        # where we want both the chunked text ("text") and the full text ("full_text")
+        # now if there is a full_text field, we should warn the user... 
+        if "full_text" in self.metadata_fields:
+            logger.warning("full_text is in the metadata fields, this will actually take from the text field")
+        if "text" in self.metadata_fields:
+            self.metadata_fields = [f for f in self.metadata_fields if f != "text"] + ["full_text"]
 
         self.paths: Set[Union[Path, str]] = set()
         # chunks maps from id (path/line_idx/chunk_idx) to Dict[str, Any] (text, metadata)
@@ -148,6 +150,7 @@ class ChunkedCorpus():
 
         self.count_only: bool = count_only
 
+        self.num_workers = num_workers
         if num_workers <= 1:
             mappings = [self.add_path(p) for p in paths]
         else:
@@ -160,6 +163,9 @@ class ChunkedCorpus():
     
 
     def add_metadata(self, data: Dict[str, Any], chunks: List[str]) -> List[Dict[str, Any]]:
+        if "full_text" in self.metadata_fields:
+            data["full_text"] = data.pop("text")
+
         return [{"text": c, **{k: data[k] for k in self.metadata_fields}} for c in chunks]
 
 
@@ -176,7 +182,9 @@ class ChunkedCorpus():
         else:
             data = data[start_idx:end_idx]
 
-        for line_idx, d in enumerate(tqdm(data, leave=False, desc=f"Processing {path}", total=len(data), disable=self.num_workers > 1)):
+        for line_idx, d in enumerate(tqdm(
+            data, leave=False, desc=f"Processing {path}", total=len(data), disable=self.num_workers > 1
+        )):
             line_idx += start_idx # we need to offset the line_idx by the start_idx so later access is correct
             if d[self.field] is None:
                 continue

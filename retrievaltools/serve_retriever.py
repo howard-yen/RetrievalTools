@@ -7,9 +7,9 @@ from simple_parsing import ArgumentParser
 import uvicorn
 from fastapi import FastAPI, Query
 
-from arguments import RetrieverOptions, ModelOptions, CorpusOptions, IndexOptions
-from retriever import DenseRetriever, WebSearchRetriever
-from utils import init_logger
+from retrievaltools.arguments import RetrieverOptions, ModelOptions, CorpusOptions, IndexOptions
+from retrievaltools.retriever import DenseRetriever, WebSearchRetriever
+from retrievaltools.utils import init_logger
 
 logger = init_logger(__name__)
 
@@ -18,6 +18,7 @@ def test_retriever():
     import requests
     payload = {"query": "Who are the current MVPs in the MLB?"}
     response = requests.post("http://localhost:8000/retrieve/", params=payload)
+    # response = requests.post("http://0.0.0.1:8001/retrieve/", params=payload)
     print(response.json())
 
     payload = {"query": ["Who are the current MVPs in the MLB?", "What is the most popular Taiwanese film of all time?"]}
@@ -52,7 +53,7 @@ def main():
     def retrieve_batch(query: List[str] = Query(...), topk: int = 10):
         return retriever.retrieve(query, topk=topk)
 
-    uvicorn.run(app, host="0.0.0.0", port=args.retriever_options.port)
+    uvicorn.run(app, host=args.retriever_options.host, port=args.retriever_options.port)
 
 
 if __name__ == "__main__":

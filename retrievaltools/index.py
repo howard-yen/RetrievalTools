@@ -9,8 +9,8 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
-from arguments import IndexOptions
-from utils import init_logger
+from retrievaltools.arguments import IndexOptions
+from retrievaltools.utils import init_logger
 
 logger = init_logger(__name__)
 

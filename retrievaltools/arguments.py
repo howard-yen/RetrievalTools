@@ -111,6 +111,13 @@ class RetrievalDataOptions:
 
 @dataclass
 class RetrieverOptions:
-    retriever_type: str = "dense"
+    retriever_type: str = "dense" # or "web"
     include_corpus: bool = False
+    host: str = "0.0.0.0"
     port: int = 8000
+    cache_path: Optional[str] = None
+
+    def __post_init__(self):
+        if self.cache_path is not None:
+            self.cache_path = Path(self.cache_path)
+            self.cache_path.parent.mkdir(parents=True, exist_ok=True)

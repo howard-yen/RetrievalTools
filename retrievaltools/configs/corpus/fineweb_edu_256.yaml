@@ -1,0 +1,11 @@
+corpus_options:
+  # this is 472 files, use like 250 shards
+  paths:
+    - /scratch/gpfs/DANQIC/awettig/data/fineweb-edu/sample/350BT/*.parquet
+  chunk_size: 256
+  threshold_chunk_size: 32
+  text_field: text
+  # can get the whole page by adding "text" to metadata_fields, so it will 
+  metadata_fields: ["url"]
+  num_workers: 8
+  corpus_type: chunk

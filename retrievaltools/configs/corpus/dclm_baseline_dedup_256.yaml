@@ -1,6 +1,7 @@
 corpus_options:
+  # this is 13144 files
   paths:
-    - /scratch/gpfs/DANQIC/awettig/data/fineweb-edu/sample/350BT/*.parquet
+    - /scratch/gpfs/PLI/hyen/data/dclm-dedup/data/dclm-dedup/*/*.parquet
   chunk_size: 256
   threshold_chunk_size: 32
   text_field: text
