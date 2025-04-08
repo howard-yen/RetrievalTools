@@ -1,4 +1,5 @@
-# RetrievalTools
+# <img src="https://github.com/user-attachments/assets/55a90c30-4790-49c7-92f6-b186ec915724" alt="RT" width="30"> RetrievalTools
+
 
 This repository contains a collection of useful retrieval tools, inspired by previous codebases, such as [Contriever](https://github.com/facebookresearch/contriever).
 The main difference from previous repos like Contriever and DPR-Scale is the additional support for different types of retrievers like BM25, SentenceTransformers, and API calls. 
@@ -10,6 +11,7 @@ We support the following operations:
  - Retrieving across sharded dense indices on GPUs and merging the results
  - Common API for different retrieval models (e.g., BM25, SentenceTransformers, API calls)
  <!-- - Retrieval-from-context with different chunking stratgies -->
+
 
 The code is especially customized towards a slurm-based cluster, and we optimize for easy paralleization and efficient memory usage.
 This can be useful for large-scale retrieval tasks, where we might want to annotate a pre-training scale corpus with retrieval results.
