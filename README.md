@@ -30,6 +30,19 @@ We also provide a simple API for playing around with different retrieval models 
 
 ## Installation
 
+You should set up a virtual environment with all the dependencies. Then, you can install the package with:
+```bash
+pip install -e .
+```
+
+Then, you should be able to import the package with:
+```python
+import retrievaltools as rt
+
+# load the retriever
+retriever = rt.load_retriever(rt.RetrieverOptions(retriever_type="web_search", cache_path="cache/serper.json"))
+```
+
 We use FAISS to support different types of dense indices; however, it can be tricky to get the environment exactly right.
 In practice, I find it easier to use a separate conda environment specifically for running FAISS GPU.
 
