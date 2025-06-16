@@ -1,6 +1,3 @@
-import os
-import sys
-from dataclasses import asdict
 from typing import List
 
 from simple_parsing import ArgumentParser
@@ -52,6 +49,10 @@ def main():
     @app.post("/retrieve_batch/")
     def retrieve_batch(query: List[str] = Query(...), topk: int = 10):
         return retriever.retrieve(query, topk=topk)
+
+    @app.post("/ping/")
+    def ping():
+        return {"status": "ok"}
 
     uvicorn.run(app, host=args.retriever_options.host, port=args.retriever_options.port)
 

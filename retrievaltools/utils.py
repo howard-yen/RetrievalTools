@@ -1,16 +1,20 @@
 import os
 import sys
-
+import json
 import re
 import string
 import requests
-
 import time
 import numpy as np
 import torch
-from typing import Tuple
+from typing import Tuple, List
+from rouge_score import rouge_scorer
+
+scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
 
 import logging
+import errno
+import fcntl
 
 def init_logger(name, args=None, stdout_only=False):
     if torch.distributed.is_initialized():
@@ -128,9 +132,82 @@ def f1_score(true_set, pred_set):
     return 2 * (precision * recall) / (precision + recall)
 
 
+def find_snippet(texts: List[str], snippet=None, num_characters=4000):
+    # find the best snippet in the text that matches the snippet
+    # take the surrounding text of the snippet
+    if snippet is None:
+        return "\n".join(texts)[:num_characters]
+
+
+    # we iterate through the texts, calculate the ROUGE score between the snippet and the text
+    # we mainly care about the recall score of ROUGE-L (most of the snippet is present in the long text)
+    # take the text with the highest recall score and the surrounding text of the snippet
+
+    positions = []
+    start = 0
+    best_recall = 0
+    best_idx = 0
+    for i, text in enumerate(texts):
+        score = scorer.score(target=snippet, prediction=text)
+        recall = score['rougeL'].recall
+        if recall > best_recall:
+            best_recall = recall
+            best_idx = i
+        positions.append((start, start + len(text)))
+        start += len(text) + 1
+    
+    best_len = len(texts[best_idx])
+    num_characters = num_characters - best_len
+    final_text = []
+    for i, pos in enumerate(positions):
+        if (pos[0] >= positions[best_idx][0] - num_characters/2 and pos[1] <= positions[best_idx][1] + num_characters/2) or i == best_idx:
+            final_text.append(texts[i])
+    
+    return "\n".join(final_text)
+    
+
 # adapted from https://github.com/idavidrein/gpqa/blob/56686c06f5e19865c153de0fdb11be3890014df7/baselines/open_book.py#L38
-def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, str, str]:
+def scrape_html(response, snippet=None, num_characters=4000) -> Tuple[bool, str, str]:
     from bs4 import BeautifulSoup
+    soup = BeautifulSoup(response.content, "html.parser")
+
+    # Remove unwanted elements
+    for element in soup.find_all(['script', 'style', 'nav', 'footer', 'iframe']):
+        element.decompose()
+
+    # Keep track of character positions for each element
+    texts = []
+    for element in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li']):
+        text = element.text.strip()
+        # Add header markers for better context
+        if element.name.startswith('h'):
+            text = f"[{element.name.upper()}] {text}"
+        
+        if len(text) == 0:
+            continue
+        
+        texts.append(text)
+
+    # Join all text for snippet matching
+    fulltext = "\n".join(texts)
+    final_snippet = find_snippet(texts, snippet, num_characters)
+
+    return True, final_snippet, fulltext
+
+
+def scrape_pdf(response, snippet=None, num_characters=4000) -> Tuple[bool, str, str]:
+    import fitz
+    with fitz.open(stream=response.content, filetype="pdf") as doc:
+        text = ""
+        for page in doc:
+            text += page.get_text()
+    
+    texts = text.split("\n")
+    final_snippet = find_snippet(texts, snippet, num_characters)
+    return True, final_snippet, text
+
+
+def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, str, str]:
     """
     Try to scrape the page content and return the best snippet that matches the snippet.
     If no snippet is provided, return the first num_characters of the page.
@@ -142,87 +219,90 @@ def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, s
         }
         response = requests.get(url, headers=headers, timeout=(3, 5))  # (connect timeout, read timeout)
         response.raise_for_status()
-        soup = BeautifulSoup(response.content, "html.parser")
-
-        # Remove unwanted elements
-        for element in soup.find_all(['script', 'style', 'nav', 'footer', 'iframe']):
-            element.decompose()
-
-        # Keep track of character positions for each element
-        content_elements_with_pos = []
-        current_pos = 0
-        for element in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li']):
-            text = element.text.strip()
-            # Add header markers for better context
-            if element.name.startswith('h'):
-                text = f"[{element.name.upper()}] {text}"
-            
-            if len(text) == 0:
-                continue
-            
-            # Store the text along with its position information
-            content_elements_with_pos.append({
-                'text': text,
-                'start': current_pos,
-                'end': current_pos + len(text)
-            })
-            current_pos += len(text) + 2  # +2 for the "\n\n" separator
-
-        # Join all text for snippet matching
-        fulltext = "\n\n".join(elem['text'] for elem in content_elements_with_pos)
-        
-        best_sentence = None
-        # find which sentence overlaps with the snippet most in terms of f1 score
-        if snippet is not None:
-            snippet = snippet.lower()
-            # remove punctuation
-            snippet = remove_punctuation(snippet)
-            snippet_words = set(snippet.split())
-            best_f1 = 0
-            sentences = fulltext.split(".")
-            for sentence in sentences:
-                key_sentence = sentence.lower()
-                key_sentence = remove_punctuation(key_sentence)
-                sentence_words = set(key_sentence.split())
-                f1 = f1_score(snippet_words, sentence_words)
-                if f1 > best_f1:
-                    best_f1 = f1
-                    best_sentence = sentence
-
-        success = True
-        if best_sentence is not None and len(best_sentence) > 0:
-            # Find the position of the best matching sentence
-            para_start = fulltext.find(best_sentence)
-            para_end = para_start + len(best_sentence)
-
-            # Find elements that should be included (within 2000 chars before and after)
-            included_elements = []
-            for elem in content_elements_with_pos:
-                # Check if element is within range or contains the best sentence
-                if (elem['start'] >= para_start - num_characters/2 and elem['start'] <= para_end + num_characters/2) or \
-                   (elem['start'] <= para_start and elem['end'] >= para_end):
-                    included_elements.append(elem['text'])
-            
-            final_snippet = "\n\n".join(included_elements)
-            # prevent super long snippets due to parsing errors and such
-            if len(final_snippet) > num_characters*2:
-                final_snippet = final_snippet[:num_characters*2]
-            return success, final_snippet, fulltext
-        
-        # If no best sentence, return first few complete elements up to ~4000 chars
-        included_elements = []
-        total_length = 0
-        for elem in content_elements_with_pos:
-            if total_length + len(elem['text']) > num_characters and total_length > 0:
-                break
-            included_elements.append(elem['text'])
-            total_length += len(elem['text']) + 2  # +2 for "\n\n"
-        final_snippet = "\n\n".join(included_elements)
-        if len(final_snippet) > num_characters*2:
-            final_snippet = final_snippet[:num_characters*2]
-        return success, final_snippet, fulltext
+        content_type = response.headers.get('Content-Type', '')
+        if "pdf" in content_type:
+            return scrape_pdf(response, snippet, num_characters)
+        else:
+            return scrape_html(response, snippet, num_characters)
 
     except Exception as e:
         success = False
         return success, f"Failed to scrape the page due to {str(e)}", ""
 
+
+class ThreadSafeFileHandler:
+    def __init__(self, filepath):
+        self.filepath = filepath
+        
+    def _acquire_lock(self, file_obj):
+        try:
+            fcntl.flock(file_obj, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except IOError as e:
+            if e.errno != errno.EAGAIN:
+                raise
+            # If file is locked, retry with exponential backoff
+            retries = 5
+            base_wait_time = 0.1
+            for i in range(retries):
+                time.sleep(base_wait_time * (2 ** i))
+                try:
+                    fcntl.flock(file_obj, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    return True
+                except IOError as e:
+                    if e.errno != errno.EAGAIN:
+                        raise
+                    continue
+            return False
+        return True
+    
+    def _release_lock(self, file_obj):
+        fcntl.flock(file_obj, fcntl.LOCK_UN)
+
+    def _ensure_file_exists(self):
+        if not os.path.exists(self.filepath):
+            os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
+            with open(self.filepath, 'w') as f:
+                json.dump({}, f)
+    
+    def read_data(self):
+        self._ensure_file_exists()
+        
+        with open(self.filepath, 'r+') as file_obj:
+            if not self._acquire_lock(file_obj):
+                raise TimeoutError("Could not acquire lock for reading")
+            
+            try:
+                file_obj.seek(0)
+                data = json.load(file_obj)
+                return data
+            finally:
+                self._release_lock(file_obj)
+    
+    def update_data(self, update_func):
+        """
+        Update the file using the provided update function.
+        update_func should take the current data as input and return the updated data.
+        """
+        self._ensure_file_exists()
+        
+        with open(self.filepath, 'r+') as file_obj:
+            if not self._acquire_lock(file_obj):
+                raise TimeoutError("Could not acquire lock for updating")
+            
+            try:
+                file_obj.seek(0)
+                try:
+                    current_data = json.load(file_obj)
+                except json.JSONDecodeError:
+                    current_data = {}
+                
+                # Apply the update function
+                updated_data = update_func(current_data)
+                
+                # Write the updated data back to the file
+                file_obj.seek(0)
+                file_obj.truncate()
+                json.dump(updated_data, file_obj)
+                return updated_data
+            finally:
+                self._release_lock(file_obj)

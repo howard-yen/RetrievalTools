@@ -111,11 +111,13 @@ class RetrievalDataOptions:
 
 @dataclass
 class RetrieverOptions:
-    retriever_type: str = "dense" # or "web"
+    retriever_type: str = "none" # or "web" "dense" or "endpoint"
     include_corpus: bool = False
     host: str = "0.0.0.0"
     port: int = 8000
+    api_key: Optional[str] = None
     cache_path: Optional[str] = None
+    topk: int = 10
 
     def __post_init__(self):
         if self.cache_path is not None:

@@ -1,13 +1,14 @@
 import os
 import json
-import string
 from typing import Optional, List, Dict, Any, Union, Tuple
-import http.client
+import random
+import time
 from dataclasses import asdict
 import requests
+import threading
 
 from retrievaltools.arguments import CorpusOptions, IndexOptions, ModelOptions, RetrieverOptions
-from retrievaltools.utils import scrape_page_content, init_logger
+from retrievaltools.utils import scrape_page_content, init_logger, ThreadSafeFileHandler
 
 logger = init_logger(__name__)
 
@@ -71,9 +72,9 @@ class DenseRetriever(Retriever):
             corpus_options: Optional[CorpusOptions]
                 The options for the corpus
         """
-        from encoder import load_encoder
-        from index import load_index
-        from data import load_corpus
+        from retrievaltools.encoder import load_encoder
+        from retrievaltools.index import load_index
+        from retrievaltools.data import load_corpus
 
         if index is None:
             assert encoder_options is not None and index_options is not None, "encoder_options and index_options must be provided if index is not provided"
@@ -135,14 +136,52 @@ class WebSearchRetriever(Retriever):
     Right now, we only support Serper
     TODO: add more search engines
     """
-    def __init__(self, api_key: str = None, base_url: str = "google.serper.dev"):
+    def __init__(
+        self, 
+        api_key: Optional[str] = None, 
+        base_url: str = "https://google.serper.dev/search", 
+        min_delay: float = 0.001, 
+        max_delay: float = 0.003,
+    ):
         if api_key is None:
             self.api_key = os.environ.get("SERPER_API_KEY")
             assert self.api_key is not None, "SERPER_API_KEY must be set"
         else:
             self.api_key = api_key
         self.base_url = base_url
-        self.conn = http.client.HTTPSConnection(self.base_url)
+        self.min_delay = min_delay
+        self.max_delay = max_delay
+        self.session = requests.Session()
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+            "X-API-KEY": self.api_key,
+            'Content-Type': 'application/json'
+        }
+        self.session.headers.update(headers)
+        self.CACHE_PATH = "cache/serper_search_cache.json"
+        self.cache_file = ThreadSafeFileHandler(self.CACHE_PATH)
+        self.cache = self.cache_file.read_data()
+        
+        # Initialize cookies by making a request to the base URL
+        try:
+            self.session.get(self.base_url)
+        except Exception as e:
+            logger.warning(f"Failed to initialize cookies: {e}")
+
+    def _add_delay(self):
+        """Add a random delay between requests to appear more human-like"""
+        delay = random.uniform(self.min_delay, self.max_delay)
+        time.sleep(delay)
 
     def retrieve(self, query: Union[str, List[str]], topk: int = 10) -> List[List[Dict[str, Any]]]:
         """
@@ -156,29 +195,34 @@ class WebSearchRetriever(Retriever):
             query = [query]
 
         for q in query:
+            if q in self.cache:
+                results.append(self.cache[q])
+                continue
+           
             payload = json.dumps({
-                "q": q
+                "q": q,
+                "num": 100,
             })
-            headers = {
-                'X-API-KEY': self.api_key,
-                'Content-Type': 'application/json'
-            }
-            self.conn.request("POST", "/search", payload, headers)
-            res = self.conn.getresponse()
-            data = res.read()
-            results.append(json.loads(data.decode("utf-8")))
+            response = self.session.post(url=self.base_url, data=payload)
+            results.append(response.json())
+            self.cache[q] = response.json()
         
-        # further processing of the result
+        # update cache
+        threading.Thread(target=lambda: self.cache_file.update_data(lambda x: x.update(self.cache) or x), daemon=True).start()
+
+        # further processing of the results
         outputs = []
         for result in results:
-            # in Serper, organic contains "title", "link", "date", "snippet", "position"
-            # rename snippet to text and link to url
+            if 'organic' not in result:
+                print("No organic results found", result)
+                continue
             for r in result['organic']:
                 if "snippet" not in r:
                     continue
                 r["text"] = r.pop("snippet")
                 r["url"] = r.pop("link")
-                # scrape the page content, 2000 characters is ~250 tokens? maybe more
+                # Add delay before scraping each page
+                # self._add_delay()
                 success, snippet, fulltext = scrape_page_content(r["url"], snippet=r["text"], num_characters=2000)
                 if success:
                     r["long_snippet"] = snippet
@@ -191,10 +235,40 @@ class WebSearchRetriever(Retriever):
         """
         Format the results into a string.
         """
-        keys = ["position", "title", "url", "long_snippet"]
+        keys = ["title", "url", "long_snippet"]
         template = "Result {position}\nTitle: {title}\nURL: {url}\n{long_snippet}"
         # for some websites, we may not be able to scrape the page content
-        results = [r for r in results if all(k in r for k in keys)][:topk]
+        results = [r for r in results if all(k in r for k in keys) and all(not isinstance(r[k], str) or len(r[k]) > 0 for k in keys)][:topk]
+        results = [{"position": i+1, **r} for i, r in enumerate(results)]
+        return "\n\n".join([template.format(**r) for r in results])
+
+
+class EndPointRetriever(Retriever):
+    """
+    In end point retriever, we rely on a end point to retrieve the topk results for the query.
+    """
+    def __init__(self, host: str = "localhost", port: int = 8000):
+        self.host = host
+        self.port = port
+        self.end_point = f"http://{self.host}:{self.port}"
+
+    def retrieve(self, query: Union[str, List[str]], topk: int = 10) -> List[List[Dict[str, Any]]]:
+        """
+        Retrieve the topk results for the query.
+        """
+        if isinstance(query, str):
+            query = [query]
+        payload = {"query": query, "topk": topk}
+        response = requests.post(self.end_point + "/retrieve_batch/", params=payload)
+        return response.json()
+
+    def format_results(self, results: List[Dict[str, Any]], topk: int = 10) -> str:
+        """
+        Format the results into a string.
+        """
+        keys = ["position", "title", "url", "long_snippet"]
+        template = "Result {position}\nTitle: {title}\nURL: {url}\n{long_snippet}"
+        results = [r for r in results if all(k in r for k in keys) and all(r[k] != "" for k in keys)][:topk]
         return "\n\n".join([template.format(**r) for r in results])
 
 
@@ -211,6 +285,8 @@ def load_retriever(
             corpus_options=corpus_options if retriever_options.include_corpus else None,
         )
     elif retriever_options.retriever_type == "web":
-        return WebSearchRetriever()
+        return WebSearchRetriever(retriever_options.api_key)
+    elif retriever_options.retriever_type == "endpoint":
+        return EndPointRetriever(retriever_options.host, retriever_options.port)
     else:
         raise ValueError(f"Invalid retriever type: {retriever_options.retriever_type}")
