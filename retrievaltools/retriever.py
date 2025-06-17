@@ -155,8 +155,7 @@ class WebSearchRetriever(Retriever):
         self.base_url = base_url
         self.min_delay = min_delay
         self.max_delay = max_delay
-        self.session = requests.Session()
-        headers = {
+        self.headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
@@ -164,7 +163,6 @@ class WebSearchRetriever(Retriever):
             "X-API-KEY": self.api_key,
             'Content-Type': 'application/json'
         }
-        self.session.headers.update(headers)
         self.use_cache = use_cache
         self.use_crawl4ai = use_crawl4ai
         if use_cache:
@@ -172,12 +170,6 @@ class WebSearchRetriever(Retriever):
             self.cache_file = ThreadSafeFileHandler(self.CACHE_PATH)
             self.cache = self.cache_file.read_data()
         
-        # Initialize cookies by making a request to the base URL
-        try:
-            self.session.get(self.base_url)
-        except Exception as e:
-            logger.warning(f"Failed to initialize cookies: {e}")
-
     def _add_delay(self):
         """Add a random delay between requests to appear more human-like"""
         delay = random.uniform(self.min_delay, self.max_delay)
@@ -201,9 +193,9 @@ class WebSearchRetriever(Retriever):
            
             payload = json.dumps({
                 "q": q,
-                "num": 20,
+                "num": 10,
             })
-            response = self.session.post(url=self.base_url, data=payload)
+            response = requests.post(url=self.base_url, data=payload, headers=self.headers)
             results.append(response.json())
             if self.use_cache:
                 self.cache[q] = response.json()
@@ -224,8 +216,6 @@ class WebSearchRetriever(Retriever):
             else:
                 scraped_results = [scrape_page_content(url, snippet=snippet, num_characters=2000) for url, snippet in zip(urls, snippets)]
             
-            import pdb; pdb.set_trace()
-
             for r, (success, snippet, fulltext) in zip(result['organic'], scraped_results):
                 r["text"] = r.pop("snippet")
                 r["url"] = r.pop("link")
