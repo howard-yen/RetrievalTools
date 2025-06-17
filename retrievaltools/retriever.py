@@ -224,7 +224,6 @@ class WebSearchRetriever(Retriever):
                     r["long_snippet"] = snippet
                     r["full_text"] = fulltext
 
-            import pdb; pdb.set_trace()
             outputs.append(result['organic'])
 
         return outputs
@@ -239,7 +238,7 @@ class WebSearchRetriever(Retriever):
         # for some websites, we may not be able to scrape the page content
         results = [r for r in results if all(k in r for k in keys) and all(not isinstance(r[k], str) or len(r[k]) > 0 for k in keys)][:topk]
         results = [{"position": i+1, **r} for i, r in enumerate(results)]
-        return "\n\n".join([template.format(**r) for r in results])
+        return f"The search engine returned {len(results)} results:\n\n" + "\n\n".join([template.format(**r) for r in results])
 
 
 class EndPointRetriever(Retriever):

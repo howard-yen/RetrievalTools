@@ -239,7 +239,6 @@ def detect_content_type(url: str) -> str:
         return 'pdf'
 
     try:
-        print(f"Detecting content type for {url}")
         response = requests.head(url, headers=HEADERS, timeout=(3, 5))
         response.raise_for_status()
         content_type = response.headers.get('Content-Type', '')
@@ -302,7 +301,7 @@ async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str
             if snippets is not None:
                 snippet = snippets[i]
                 if len(fit_markdown) > 10000:
-                    fit_markdown = find_snippet(fit_markdown, snippet, 10000)
+                    fit_markdown = find_snippet(fit_markdown.split("\n"), snippet, 10000)
             return (True, fit_markdown, result.markdown.raw_markdown)
 
     try:
@@ -344,8 +343,7 @@ async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str
                                 markdown_generator=md_generator,
                                 page_timeout=15000,
                                 exclude_external_images=True,
-                                word_count_threshold=1,
-                                ignore_https_errors=True,
+                                word_count_threshold=3,
                             ),
                             dispatcher=dispatcher,
                         ),
@@ -425,7 +423,6 @@ async def scrape_page_content_crawl4ai(url: str, snippet=None) -> Tuple[bool, st
                         config=CrawlerRunConfig(
                             markdown_generator=md_generator,
                             page_timeout=15000,
-                            ignore_https_errors=True,
                         )
                     ),
                     timeout=30
