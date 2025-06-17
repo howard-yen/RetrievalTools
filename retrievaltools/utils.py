@@ -9,12 +9,19 @@ import numpy as np
 import torch
 from typing import Tuple, List
 from rouge_score import rouge_scorer
+from urllib.parse import urlparse
+from tqdm.contrib.concurrent import thread_map
 
 scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
 
 import logging
 import errno
 import fcntl
+
+
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
+}
 
 def init_logger(name, args=None, stdout_only=False):
     if torch.distributed.is_initialized():
@@ -138,7 +145,6 @@ def find_snippet(texts: List[str], snippet=None, num_characters=4000):
     if snippet is None:
         return "\n".join(texts)[:num_characters]
 
-
     # we iterate through the texts, calculate the ROUGE score between the snippet and the text
     # we mainly care about the recall score of ROUGE-L (most of the snippet is present in the long text)
     # take the text with the highest recall score and the surrounding text of the snippet
@@ -207,17 +213,14 @@ def scrape_pdf(response, snippet=None, num_characters=4000) -> Tuple[bool, str, 
     return True, final_snippet, text
 
 
-def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, str, str]:
+def scrape_page_content(url, snippet=None, num_characters=10000) -> Tuple[bool, str, str]:
     """
     Try to scrape the page content and return the best snippet that matches the snippet.
     If no snippet is provided, return the first num_characters of the page.
     Returns a tuple of (success, snippet, fulltext).
     """
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
-        }
-        response = requests.get(url, headers=headers, timeout=(3, 5))  # (connect timeout, read timeout)
+        response = requests.get(url, headers=HEADERS, timeout=(3, 5))  # (connect timeout, read timeout)
         response.raise_for_status()
         content_type = response.headers.get('Content-Type', '')
         if "pdf" in content_type:
@@ -228,6 +231,183 @@ def scrape_page_content(url, snippet=None, num_characters=4000) -> Tuple[bool, s
     except Exception as e:
         success = False
         return success, f"Failed to scrape the page due to {str(e)}", ""
+
+
+def detect_content_type(url: str) -> str:
+    parsed_url = urlparse(url)
+    if parsed_url.path.lower().endswith('.pdf'):
+        return 'pdf'
+
+    try:
+        response = requests.head(url, headers=HEADERS)
+        content_type = response.headers.get('Content-Type', '')
+        if "pdf" in content_type:
+            return "pdf"
+        else:
+            return "html"
+    except Exception as e:
+        return "html"
+
+
+async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str] = None) -> Tuple[bool, str, str]:
+    from crawl4ai.processors.pdf import PDFCrawlerStrategy, PDFContentScrapingStrategy
+    from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
+    from crawl4ai.content_filter_strategy import PruningContentFilter
+    from crawl4ai.async_dispatcher import MemoryAdaptiveDispatcher
+    from crawl4ai import CrawlerRunConfig, AsyncWebCrawler, CrawlerMonitor, RateLimiter, BrowserConfig
+    
+    prune_filter = PruningContentFilter(
+        threshold=0.3,
+        threshold_type="fixed",  
+        min_word_threshold=3
+    )
+
+    dispatcher = MemoryAdaptiveDispatcher(
+        memory_threshold_percent=90.0,  # Pause if memory exceeds this
+        check_interval=1.0,             # How often to check memory
+        max_session_permit=10,          # Maximum concurrent tasks
+        fairness_timeout=60,
+        rate_limiter=RateLimiter(
+            base_delay=(0.1, 0.2),
+            max_delay=2.0,
+            max_retries=2
+        ),
+        # monitor=CrawlerMonitor()
+    )
+
+    md_generator = DefaultMarkdownGenerator(
+        content_filter=prune_filter,
+        options={"ignore_links": False}
+    )
+
+    browser_config = BrowserConfig(
+        headless=True,
+        light_mode=True,
+        # browser_mode='builtin',
+        extra_args=[
+          "--disable-gpu",
+          "--single-process",
+          "--memory-pressure-off"
+        ]
+    )
+
+    def process_result(result, i, snippets):
+        if result is None or not result.success:
+            return (False, f"Failed to scrape the page due to {result.error_message}", "")
+        else:
+            fit_markdown = result.markdown.fit_markdown
+            if snippets is not None:
+                snippet = snippets[i]
+                if len(fit_markdown) > 10000:
+                    fit_markdown = find_snippet(fit_markdown, snippet, 10000)
+            return (True, fit_markdown, result.markdown.raw_markdown)
+
+    try:
+        content_types = thread_map(detect_content_type, urls, desc="Detecting content types")
+        pdf_urls = [url for url, content_type in zip(urls, content_types) if content_type == "pdf"]
+        pdf_idxs = [i for i, content_type in enumerate(content_types) if content_type == "pdf"]
+        html_urls = [url for url, content_type in zip(urls, content_types) if content_type == "html"]
+        html_idxs = [i for i, content_type in enumerate(content_types) if content_type == "html"]
+        all_results = [None for _ in range(len(urls))]
+
+        if len(pdf_urls) > 0:
+            # async with AsyncWebCrawler(config=browser_config, crawler_strategy=PDFCrawlerStrategy()) as crawler:
+            #     results = await crawler.arun_many(
+            #         urls=pdf_urls,
+            #         config=CrawlerRunConfig(
+            #             markdown_generator=md_generator,
+            #             scraping_strategy=PDFContentScrapingStrategy(),
+            #             page_timeout=10,
+            #             exclude_external_images=True,
+            #         ),
+            #         dispatcher=dispatcher,
+            #         only_text=True,
+            #     )
+            # for i, result in enumerate(results):
+            #     all_results[pdf_idxs[i]] = process_result(result, i, snippets)
+
+            results = thread_map(scrape_page_content, pdf_urls, [snippets[i] for i in pdf_idxs], desc="Scraping PDFs")
+            for i, result in enumerate(results):
+                all_results[pdf_idxs[i]] = results[i]
+
+        if len(html_urls) > 0:
+            # AsyncHTTPCrawlerStrategy()
+            async with AsyncWebCrawler(config=browser_config) as crawler:  # Default strategy
+                results = await crawler.arun_many(
+                    urls=html_urls,
+                    config=CrawlerRunConfig(
+                        markdown_generator=md_generator,
+                        # page_timeout=1000,
+                        exclude_external_images=True,
+                    ),
+                    dispatcher=dispatcher,
+                    only_text=True,
+                )
+            for i, result in enumerate(results):
+                all_results[html_idxs[i]] = process_result(result, i, snippets)
+
+        return all_results
+
+    except Exception as e:
+        raise e
+        return None
+
+
+async def scrape_page_content_crawl4ai(url: str, snippet=None) -> Tuple[bool, str, str]:
+    from crawl4ai.processors.pdf import PDFCrawlerStrategy, PDFContentScrapingStrategy
+    from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
+    from crawl4ai.content_filter_strategy import BM25ContentFilter, PruningContentFilter
+    from crawl4ai import CrawlerRunConfig, AsyncWebCrawler
+
+    bm25_filter = BM25ContentFilter(
+        user_query=snippet,
+        bm25_threshold=1.0,
+    )
+    prune_filter = PruningContentFilter(
+        threshold=0.4,
+        threshold_type="dynamic",  
+        min_word_threshold=3
+    )
+
+    md_generator = DefaultMarkdownGenerator(
+        content_filter=prune_filter,
+        options={"ignore_links": False}
+    )
+    config = CrawlerRunConfig(markdown_generator=md_generator)
+
+    try:
+        content_type = detect_content_type(url)
+        if content_type == "pdf":
+            async with AsyncWebCrawler(crawler_strategy=PDFCrawlerStrategy()) as crawler:
+                result = await crawler.arun(
+                    url=url,
+                    config=CrawlerRunConfig(
+                        markdown_generator=md_generator,
+                        scraping_strategy=PDFContentScrapingStrategy()
+                    )
+                )
+        else:
+            async with AsyncWebCrawler() as crawler:  # Default strategy
+                result = await crawler.arun(
+                    url=url,
+                    config=CrawlerRunConfig(
+                        markdown_generator=md_generator,
+                    )
+                )
+        if not result.success:
+            return False, f"Failed to scrape the page due to {result.error_message}", ""
+
+        fit_markdown = result.markdown.fit_markdown 
+        raw_markdown = result.markdown.raw_markdown
+
+        # if the markdown is too long, we truncate it
+        if len(fit_markdown) > 10000:
+            fit_markdown = find_snippet(fit_markdown, snippet, 10000)
+
+        return True, fit_markdown, raw_markdown
+
+    except Exception as e:
+        return False, f"Failed to scrape the page due to {str(e)}", ""
 
 
 class ThreadSafeFileHandler:

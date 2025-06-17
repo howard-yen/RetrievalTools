@@ -116,6 +116,8 @@ class RetrieverOptions:
     host: str = "0.0.0.0"
     port: int = 8000
     api_key: Optional[str] = None
+    use_cache: bool = True
+    use_crawl4ai: bool = False
     cache_path: Optional[str] = None
     topk: int = 10
 

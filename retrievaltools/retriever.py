@@ -6,9 +6,11 @@ import time
 from dataclasses import asdict
 import requests
 import threading
+import asyncio
+from tqdm import tqdm
 
 from retrievaltools.arguments import CorpusOptions, IndexOptions, ModelOptions, RetrieverOptions
-from retrievaltools.utils import scrape_page_content, init_logger, ThreadSafeFileHandler
+from retrievaltools.utils import scrape_page_content, init_logger, ThreadSafeFileHandler, scrape_page_content_crawl4ai_batch
 
 logger = init_logger(__name__)
 
@@ -142,6 +144,8 @@ class WebSearchRetriever(Retriever):
         base_url: str = "https://google.serper.dev/search", 
         min_delay: float = 0.001, 
         max_delay: float = 0.003,
+        use_cache: bool = True,
+        use_crawl4ai: bool = False,
     ):
         if api_key is None:
             self.api_key = os.environ.get("SERPER_API_KEY")
@@ -156,21 +160,17 @@ class WebSearchRetriever(Retriever):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1',
-            'Sec-Fetch-Dest': 'document',
-            'Sec-Fetch-Mode': 'navigate',
-            'Sec-Fetch-Site': 'none',
-            'Sec-Fetch-User': '?1',
-            'Cache-Control': 'max-age=0',
             "X-API-KEY": self.api_key,
             'Content-Type': 'application/json'
         }
         self.session.headers.update(headers)
-        self.CACHE_PATH = "cache/serper_search_cache.json"
-        self.cache_file = ThreadSafeFileHandler(self.CACHE_PATH)
-        self.cache = self.cache_file.read_data()
+        self.use_cache = use_cache
+        self.use_crawl4ai = use_crawl4ai
+        if use_cache:
+            self.CACHE_PATH = "cache/serper_search_cache.json"
+            self.cache_file = ThreadSafeFileHandler(self.CACHE_PATH)
+            self.cache = self.cache_file.read_data()
         
         # Initialize cookies by making a request to the base URL
         try:
@@ -194,39 +194,46 @@ class WebSearchRetriever(Retriever):
         if isinstance(query, str):
             query = [query]
 
-        for q in query:
-            if q in self.cache:
+        for q in tqdm(query, desc="Retrieving from Serper"):
+            if self.use_cache and q in self.cache:
                 results.append(self.cache[q])
                 continue
            
             payload = json.dumps({
                 "q": q,
-                "num": 100,
+                "num": 20,
             })
             response = self.session.post(url=self.base_url, data=payload)
             results.append(response.json())
-            self.cache[q] = response.json()
+            if self.use_cache:
+                self.cache[q] = response.json()
         
         # update cache
-        threading.Thread(target=lambda: self.cache_file.update_data(lambda x: x.update(self.cache) or x), daemon=True).start()
+        if self.use_cache:
+            threading.Thread(target=lambda: self.cache_file.update_data(lambda x: x.update(self.cache) or x), daemon=True).start()
 
         # further processing of the results
         outputs = []
-        for result in results:
-            if 'organic' not in result:
-                print("No organic results found", result)
-                continue
-            for r in result['organic']:
-                if "snippet" not in r:
-                    continue
+        results = [r for r in results if 'organic' in r]
+        
+        for result in tqdm(results, desc="Scraping results"):
+            urls = [r['link'] for r in result['organic']]
+            snippets = [r['snippet'] for r in result['organic']]
+            if self.use_crawl4ai:
+                scraped_results = asyncio.run(scrape_page_content_crawl4ai_batch(urls, snippets))
+            else:
+                scraped_results = [scrape_page_content(url, snippet=snippet, num_characters=2000) for url, snippet in zip(urls, snippets)]
+            
+            import pdb; pdb.set_trace()
+
+            for r, (success, snippet, fulltext) in zip(result['organic'], scraped_results):
                 r["text"] = r.pop("snippet")
                 r["url"] = r.pop("link")
-                # Add delay before scraping each page
-                # self._add_delay()
-                success, snippet, fulltext = scrape_page_content(r["url"], snippet=r["text"], num_characters=2000)
+
                 if success:
                     r["long_snippet"] = snippet
                     r["full_text"] = fulltext
+
             outputs.append(result['organic'])
 
         return outputs
@@ -236,7 +243,8 @@ class WebSearchRetriever(Retriever):
         Format the results into a string.
         """
         keys = ["title", "url", "long_snippet"]
-        template = "Result {position}\nTitle: {title}\nURL: {url}\n{long_snippet}"
+        # template = "Result {position}\nTitle: {title}\nURL: {url}\n{long_snippet}"
+        template = "<Search Result {position}>\n<Title: {title}>\n<URL: {url}>\n{long_snippet}\n</Search Result {position}>"
         # for some websites, we may not be able to scrape the page content
         results = [r for r in results if all(k in r for k in keys) and all(not isinstance(r[k], str) or len(r[k]) > 0 for k in keys)][:topk]
         results = [{"position": i+1, **r} for i, r in enumerate(results)]
@@ -285,7 +293,11 @@ def load_retriever(
             corpus_options=corpus_options if retriever_options.include_corpus else None,
         )
     elif retriever_options.retriever_type == "web":
-        return WebSearchRetriever(retriever_options.api_key)
+        return WebSearchRetriever(
+            api_key=retriever_options.api_key,
+            use_cache=retriever_options.use_cache,
+            use_crawl4ai=retriever_options.use_crawl4ai,
+        )
     elif retriever_options.retriever_type == "endpoint":
         return EndPointRetriever(retriever_options.host, retriever_options.port)
     else:
