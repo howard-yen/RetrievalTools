@@ -208,9 +208,9 @@ class WebSearchRetriever(Retriever):
         outputs = []
         results = [r for r in results if 'organic' in r]
         
-        for result in tqdm(results, desc="Scraping results"):
+        for idx, result in enumerate(tqdm(results, desc="Scraping results")):
             urls = [r['link'] for r in result['organic']]
-            snippets = [r['snippet'] for r in result['organic']]
+            snippets = [r['snippet'] if 'snippet' in r else query[idx] for r in result['organic']]
             if self.use_crawl4ai:
                 scraped_results = asyncio.run(scrape_page_content_crawl4ai_batch(urls, snippets))
             else:
@@ -224,6 +224,7 @@ class WebSearchRetriever(Retriever):
                     r["long_snippet"] = snippet
                     r["full_text"] = fulltext
 
+            import pdb; pdb.set_trace()
             outputs.append(result['organic'])
 
         return outputs
