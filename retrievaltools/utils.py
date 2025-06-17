@@ -239,7 +239,9 @@ def detect_content_type(url: str) -> str:
         return 'pdf'
 
     try:
-        response = requests.head(url, headers=HEADERS)
+        print(f"Detecting content type for {url}")
+        response = requests.head(url, headers=HEADERS, timeout=(3, 5))
+        response.raise_for_status()
         content_type = response.headers.get('Content-Type', '')
         if "pdf" in content_type:
             return "pdf"
@@ -263,16 +265,15 @@ async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str
     )
 
     dispatcher = MemoryAdaptiveDispatcher(
-        memory_threshold_percent=90.0,  # Pause if memory exceeds this
-        check_interval=1.0,             # How often to check memory
-        max_session_permit=10,          # Maximum concurrent tasks
-        fairness_timeout=60,
+        memory_threshold_percent=85.0,
+        check_interval=2.0,
+        max_session_permit=5,
+        fairness_timeout=120,
         rate_limiter=RateLimiter(
-            base_delay=(0.1, 0.2),
-            max_delay=2.0,
-            max_retries=2
+            base_delay=(0.5, 1.0),
+            max_delay=5.0,
+            max_retries=3
         ),
-        # monitor=CrawlerMonitor()
     )
 
     md_generator = DefaultMarkdownGenerator(
@@ -282,12 +283,14 @@ async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str
 
     browser_config = BrowserConfig(
         headless=True,
-        light_mode=True,
-        # browser_mode='builtin',
         extra_args=[
           "--disable-gpu",
-          "--single-process",
-          "--memory-pressure-off"
+          "--disable-dev-shm-usage",
+          "--no-sandbox",
+          "--disable-extensions",
+          "--disable-background-timer-throttling",
+          "--disable-backgrounding-occluded-windows",
+          "--disable-renderer-backgrounding"
         ]
     )
 
@@ -331,20 +334,38 @@ async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str
                 all_results[pdf_idxs[i]] = results[i]
 
         if len(html_urls) > 0:
-            # AsyncHTTPCrawlerStrategy()
-            async with AsyncWebCrawler(config=browser_config) as crawler:  # Default strategy
-                results = await crawler.arun_many(
-                    urls=html_urls,
-                    config=CrawlerRunConfig(
-                        markdown_generator=md_generator,
-                        # page_timeout=1000,
-                        exclude_external_images=True,
-                    ),
-                    dispatcher=dispatcher,
-                    only_text=True,
-                )
-            for i, result in enumerate(results):
-                all_results[html_idxs[i]] = process_result(result, i, snippets)
+            try:
+                import asyncio
+                async with AsyncWebCrawler(config=browser_config) as crawler:
+                    results = await asyncio.wait_for(
+                        crawler.arun_many(
+                            urls=html_urls,
+                            config=CrawlerRunConfig(
+                                markdown_generator=md_generator,
+                                page_timeout=15000,
+                                exclude_external_images=True,
+                                word_count_threshold=1,
+                                ignore_https_errors=True,
+                            ),
+                            dispatcher=dispatcher,
+                        ),
+                        timeout=300
+                    )
+                for i, result in enumerate(results):
+                    all_results[html_idxs[i]] = process_result(result, i, snippets)
+            except (asyncio.TimeoutError, Exception) as e:
+                print(f"Crawl4ai batch processing failed: {e}. Falling back to individual requests.")
+                for i, url in enumerate(html_urls):
+                    try:
+                        snippet = snippets[html_idxs[i]] if snippets else None
+                        result = await asyncio.wait_for(
+                            scrape_page_content_crawl4ai(url, snippet),
+                            timeout=30
+                        )
+                        all_results[html_idxs[i]] = result
+                    except Exception:
+                        fallback_result = scrape_page_content(url, snippet if snippets else None)
+                        all_results[html_idxs[i]] = fallback_result
 
         return all_results
 
@@ -357,12 +378,9 @@ async def scrape_page_content_crawl4ai(url: str, snippet=None) -> Tuple[bool, st
     from crawl4ai.processors.pdf import PDFCrawlerStrategy, PDFContentScrapingStrategy
     from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
     from crawl4ai.content_filter_strategy import BM25ContentFilter, PruningContentFilter
-    from crawl4ai import CrawlerRunConfig, AsyncWebCrawler
+    from crawl4ai import CrawlerRunConfig, AsyncWebCrawler, BrowserConfig
+    import asyncio
 
-    bm25_filter = BM25ContentFilter(
-        user_query=snippet,
-        bm25_threshold=1.0,
-    )
     prune_filter = PruningContentFilter(
         threshold=0.4,
         threshold_type="dynamic",  
@@ -373,26 +391,44 @@ async def scrape_page_content_crawl4ai(url: str, snippet=None) -> Tuple[bool, st
         content_filter=prune_filter,
         options={"ignore_links": False}
     )
-    config = CrawlerRunConfig(markdown_generator=md_generator)
+
+    browser_config = BrowserConfig(
+        headless=True,
+        extra_args=[
+            "--disable-gpu",
+            "--disable-dev-shm-usage", 
+            "--no-sandbox",
+            "--disable-extensions",
+        ]
+    )
 
     try:
         content_type = detect_content_type(url)
         if content_type == "pdf":
-            async with AsyncWebCrawler(crawler_strategy=PDFCrawlerStrategy()) as crawler:
-                result = await crawler.arun(
-                    url=url,
-                    config=CrawlerRunConfig(
-                        markdown_generator=md_generator,
-                        scraping_strategy=PDFContentScrapingStrategy()
-                    )
+            async with AsyncWebCrawler(config=browser_config, crawler_strategy=PDFCrawlerStrategy()) as crawler:
+                result = await asyncio.wait_for(
+                    crawler.arun(
+                        url=url,
+                        config=CrawlerRunConfig(
+                            markdown_generator=md_generator,
+                            scraping_strategy=PDFContentScrapingStrategy(),
+                            page_timeout=15000,
+                        )
+                    ),
+                    timeout=30
                 )
         else:
-            async with AsyncWebCrawler() as crawler:  # Default strategy
-                result = await crawler.arun(
-                    url=url,
-                    config=CrawlerRunConfig(
-                        markdown_generator=md_generator,
-                    )
+            async with AsyncWebCrawler(config=browser_config) as crawler:
+                result = await asyncio.wait_for(
+                    crawler.arun(
+                        url=url,
+                        config=CrawlerRunConfig(
+                            markdown_generator=md_generator,
+                            page_timeout=15000,
+                            ignore_https_errors=True,
+                        )
+                    ),
+                    timeout=30
                 )
         if not result.success:
             return False, f"Failed to scrape the page due to {result.error_message}", ""
