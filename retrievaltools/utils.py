@@ -12,12 +12,17 @@ from rouge_score import rouge_scorer
 from urllib.parse import urlparse
 from tqdm.contrib.concurrent import thread_map
 
-scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
-
 import logging
 import errno
 import fcntl
 
+# Suppress crawl4ai logging
+logging.getLogger("crawl4ai").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("playwright").setLevel(logging.WARNING)
+
+scorer = rouge_scorer.RougeScorer(['rougeL'], use_stemmer=True)
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3"
@@ -250,7 +255,7 @@ def detect_content_type(url: str) -> str:
         return "html"
 
 
-async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str] = None) -> Tuple[bool, str, str]:
+async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str] = None, verbose: bool = False) -> Tuple[bool, str, str]:
     from crawl4ai.processors.pdf import PDFCrawlerStrategy, PDFContentScrapingStrategy
     from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
     from crawl4ai.content_filter_strategy import PruningContentFilter
@@ -282,6 +287,7 @@ async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str
 
     browser_config = BrowserConfig(
         headless=True,
+        verbose=verbose,  # Suppress crawl4ai browser logging
         extra_args=[
           "--disable-gpu",
           "--disable-dev-shm-usage",
@@ -305,7 +311,7 @@ async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str
             return (True, fit_markdown, result.markdown.raw_markdown)
 
     try:
-        content_types = thread_map(detect_content_type, urls, desc="Detecting content types")
+        content_types = thread_map(detect_content_type, urls, desc="Detecting content types", disable=not verbose)
         pdf_urls = [url for url, content_type in zip(urls, content_types) if content_type == "pdf"]
         pdf_idxs = [i for i, content_type in enumerate(content_types) if content_type == "pdf"]
         html_urls = [url for url, content_type in zip(urls, content_types) if content_type == "html"]
@@ -328,7 +334,7 @@ async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str
             # for i, result in enumerate(results):
             #     all_results[pdf_idxs[i]] = process_result(result, i, snippets)
 
-            results = thread_map(scrape_page_content, pdf_urls, [snippets[i] for i in pdf_idxs], desc="Scraping PDFs")
+            results = thread_map(scrape_page_content, pdf_urls, [snippets[i] for i in pdf_idxs], desc="Scraping PDFs", disable=not verbose)
             for i, result in enumerate(results):
                 all_results[pdf_idxs[i]] = results[i]
 
@@ -344,6 +350,7 @@ async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str
                                 page_timeout=15000,
                                 exclude_external_images=True,
                                 word_count_threshold=3,
+                                verbose=verbose,  # Suppress crawl4ai run logging
                             ),
                             dispatcher=dispatcher,
                         ),
@@ -357,7 +364,7 @@ async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str
                     try:
                         snippet = snippets[html_idxs[i]] if snippets else None
                         result = await asyncio.wait_for(
-                            scrape_page_content_crawl4ai(url, snippet),
+                            scrape_page_content_crawl4ai(url, snippet, verbose=verbose),
                             timeout=30
                         )
                         all_results[html_idxs[i]] = result
@@ -372,7 +379,7 @@ async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str
         return None
 
 
-async def scrape_page_content_crawl4ai(url: str, snippet=None) -> Tuple[bool, str, str]:
+async def scrape_page_content_crawl4ai(url: str, snippet=None, verbose: bool = False) -> Tuple[bool, str, str]:
     from crawl4ai.processors.pdf import PDFCrawlerStrategy, PDFContentScrapingStrategy
     from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
     from crawl4ai.content_filter_strategy import BM25ContentFilter, PruningContentFilter
@@ -392,6 +399,7 @@ async def scrape_page_content_crawl4ai(url: str, snippet=None) -> Tuple[bool, st
 
     browser_config = BrowserConfig(
         headless=True,
+        verbose=verbose,  # Suppress crawl4ai browser logging
         extra_args=[
             "--disable-gpu",
             "--disable-dev-shm-usage", 
@@ -411,6 +419,7 @@ async def scrape_page_content_crawl4ai(url: str, snippet=None) -> Tuple[bool, st
                             markdown_generator=md_generator,
                             scraping_strategy=PDFContentScrapingStrategy(),
                             page_timeout=15000,
+                            verbose=verbose,  # Suppress crawl4ai run logging
                         )
                     ),
                     timeout=30
@@ -423,6 +432,7 @@ async def scrape_page_content_crawl4ai(url: str, snippet=None) -> Tuple[bool, st
                         config=CrawlerRunConfig(
                             markdown_generator=md_generator,
                             page_timeout=15000,
+                            verbose=verbose,  # Suppress crawl4ai run logging
                         )
                     ),
                     timeout=30

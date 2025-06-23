@@ -146,6 +146,7 @@ class WebSearchRetriever(Retriever):
         max_delay: float = 0.003,
         use_cache: bool = True,
         use_crawl4ai: bool = False,
+        verbose: bool = False,
     ):
         if api_key is None:
             self.api_key = os.environ.get("SERPER_API_KEY")
@@ -165,6 +166,7 @@ class WebSearchRetriever(Retriever):
         }
         self.use_cache = use_cache
         self.use_crawl4ai = use_crawl4ai
+        self.verbose = verbose
         if use_cache:
             self.CACHE_PATH = "cache/serper_search_cache.json"
             self.cache_file = ThreadSafeFileHandler(self.CACHE_PATH)
@@ -186,7 +188,7 @@ class WebSearchRetriever(Retriever):
         if isinstance(query, str):
             query = [query]
 
-        for q in tqdm(query, desc="Retrieving from Serper"):
+        for q in tqdm(query, desc="Retrieving from Serper", disable=not self.verbose):
             if self.use_cache and q in self.cache:
                 results.append(self.cache[q])
                 continue
@@ -208,16 +210,16 @@ class WebSearchRetriever(Retriever):
         outputs = []
         results = [r for r in results if 'organic' in r]
         
-        for idx, result in enumerate(tqdm(results, desc="Scraping results")):
+        for idx, result in enumerate(tqdm(results, desc="Scraping results", disable=not self.verbose)):
             urls = [r['link'] for r in result['organic']]
             snippets = [r['snippet'] if 'snippet' in r else query[idx] for r in result['organic']]
             if self.use_crawl4ai:
-                scraped_results = asyncio.run(scrape_page_content_crawl4ai_batch(urls, snippets))
+                scraped_results = asyncio.run(scrape_page_content_crawl4ai_batch(urls, snippets, verbose=self.verbose))
             else:
                 scraped_results = [scrape_page_content(url, snippet=snippet, num_characters=2000) for url, snippet in zip(urls, snippets)]
             
             for r, (success, snippet, fulltext) in zip(result['organic'], scraped_results):
-                r["text"] = r.pop("snippet")
+                r["text"] = r.pop("snippet", "")
                 r["url"] = r.pop("link")
 
                 if success:
@@ -237,7 +239,7 @@ class WebSearchRetriever(Retriever):
         template = "<Search Result {position}>\n<Title: {title}>\n<URL: {url}>\n{long_snippet}\n</Search Result {position}>"
         # for some websites, we may not be able to scrape the page content
         results = [r for r in results if all(k in r for k in keys) and all(not isinstance(r[k], str) or len(r[k]) > 0 for k in keys)][:topk]
-        results = [{"position": i+1, **r} for i, r in enumerate(results)]
+        results = [{**r, "position": i+1} for i, r in enumerate(results)]
         return f"The search engine returned {len(results)} results:\n\n" + "\n\n".join([template.format(**r) for r in results])
 
 
@@ -287,6 +289,7 @@ def load_retriever(
             api_key=retriever_options.api_key,
             use_cache=retriever_options.use_cache,
             use_crawl4ai=retriever_options.use_crawl4ai,
+            verbose=retriever_options.verbose,
         )
     elif retriever_options.retriever_type == "endpoint":
         return EndPointRetriever(retriever_options.host, retriever_options.port)

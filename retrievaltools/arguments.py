@@ -120,6 +120,7 @@ class RetrieverOptions:
     use_crawl4ai: bool = False
     cache_path: Optional[str] = None
     topk: int = 10
+    verbose: bool = False
 
     def __post_init__(self):
         if self.cache_path is not None:
