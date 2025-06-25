@@ -214,7 +214,13 @@ class WebSearchRetriever(Retriever):
             urls = [r['link'] for r in result['organic']]
             snippets = [r['snippet'] if 'snippet' in r else query[idx] for r in result['organic']]
             if self.use_crawl4ai:
-                scraped_results = asyncio.run(scrape_page_content_crawl4ai_batch(urls, snippets, verbose=self.verbose))
+                try:
+                    # Try to use existing event loop if available
+                    loop = asyncio.get_running_loop()
+                    scraped_results = loop.run_until_complete(scrape_page_content_crawl4ai_batch(urls, snippets, verbose=self.verbose))
+                except RuntimeError:
+                    # No running loop, create a new one
+                    scraped_results = asyncio.run(scrape_page_content_crawl4ai_batch(urls, snippets, verbose=self.verbose))
             else:
                 scraped_results = [scrape_page_content(url, snippet=snippet, num_characters=2000) for url, snippet in zip(urls, snippets)]
             
