@@ -145,7 +145,7 @@ class WebSearchRetriever(Retriever):
         min_delay: float = 0.001, 
         max_delay: float = 0.003,
         use_cache: bool = True,
-        use_crawl4ai: bool = False,
+        web_scraping: str = "none",
         verbose: bool = False,
     ):
         if api_key is None:
@@ -165,7 +165,7 @@ class WebSearchRetriever(Retriever):
             'Content-Type': 'application/json'
         }
         self.use_cache = use_cache
-        self.use_crawl4ai = use_crawl4ai
+        self.web_scraping = web_scraping
         self.verbose = verbose
         if use_cache:
             self.CACHE_PATH = "cache/serper_search_cache.json"
@@ -213,7 +213,7 @@ class WebSearchRetriever(Retriever):
         for idx, result in enumerate(tqdm(results, desc="Scraping results", disable=not self.verbose)):
             urls = [r['link'] for r in result['organic']]
             snippets = [r['snippet'] if 'snippet' in r else query[idx] for r in result['organic']]
-            if self.use_crawl4ai:
+            if self.web_scraping == "crawl4ai":
                 try:
                     # Try to use existing event loop if available
                     loop = asyncio.get_running_loop()
@@ -221,8 +221,10 @@ class WebSearchRetriever(Retriever):
                 except RuntimeError:
                     # No running loop, create a new one
                     scraped_results = asyncio.run(scrape_page_content_crawl4ai_batch(urls, snippets, verbose=self.verbose))
-            else:
+            elif self.web_scraping == "bs4":
                 scraped_results = [scrape_page_content(url, snippet=snippet, num_characters=2000) for url, snippet in zip(urls, snippets)]
+            else:
+                scraped_results = [(False, "", "") for _ in urls]
             
             for r, (success, snippet, fulltext) in zip(result['organic'], scraped_results):
                 r["text"] = r.pop("snippet", "")
@@ -240,9 +242,16 @@ class WebSearchRetriever(Retriever):
         """
         Format the results into a string.
         """
-        keys = ["title", "url", "long_snippet"]
-        # template = "Result {position}\nTitle: {title}\nURL: {url}\n{long_snippet}"
-        template = "<Search Result {position}>\n<Title: {title}>\n<URL: {url}>\n{long_snippet}\n</Search Result {position}>"
+
+        if self.web_scraping == "none":
+            keys = ["title", "url", "text"]
+            template = "<Search Result {position}>\n<Title: {title}>\n<URL: {url}>\n{text}\n</Search Result {position}>"
+            
+        else:       
+            keys = ["title", "url", "long_snippet"]
+            # template = "Result {position}\nTitle: {title}\nURL: {url}\n{long_snippet}"
+            template = "<Search Result {position}>\n<Title: {title}>\n<URL: {url}>\n{long_snippet}\n</Search Result {position}>"
+
         # for some websites, we may not be able to scrape the page content
         results = [r for r in results if all(k in r for k in keys) and all(not isinstance(r[k], str) or len(r[k]) > 0 for k in keys)][:topk]
         results = [{**r, "position": i+1} for i, r in enumerate(results)]
@@ -294,7 +303,7 @@ def load_retriever(
         return WebSearchRetriever(
             api_key=retriever_options.api_key,
             use_cache=retriever_options.use_cache,
-            use_crawl4ai=retriever_options.use_crawl4ai,
+            web_scraping=retriever_options.web_scraping,
             verbose=retriever_options.verbose,
         )
     elif retriever_options.retriever_type == "endpoint":

@@ -411,19 +411,21 @@ async def scrape_page_content_crawl4ai(url: str, snippet=None, verbose: bool = F
     try:
         content_type = detect_content_type(url)
         if content_type == "pdf":
-            async with AsyncWebCrawler(config=browser_config, crawler_strategy=PDFCrawlerStrategy()) as crawler:
-                result = await asyncio.wait_for(
-                    crawler.arun(
-                        url=url,
-                        config=CrawlerRunConfig(
-                            markdown_generator=md_generator,
-                            scraping_strategy=PDFContentScrapingStrategy(),
-                            page_timeout=15000,
-                            verbose=verbose,  # Suppress crawl4ai run logging
-                        )
-                    ),
-                    timeout=30
-                )
+            # async with AsyncWebCrawler(config=browser_config, crawler_strategy=PDFCrawlerStrategy()) as crawler:
+            #     result = await asyncio.wait_for(
+            #         crawler.arun(
+            #             url=url,
+            #             config=CrawlerRunConfig(
+            #                 markdown_generator=md_generator,
+            #                 scraping_strategy=PDFContentScrapingStrategy(),
+            #                 page_timeout=15000,
+            #                 verbose=verbose,  # Suppress crawl4ai run logging
+            #             )
+            #         ),
+            #         timeout=30
+            #     )
+            result = scrape_page_content(url, snippet, 10000)
+            return result
         else:
             async with AsyncWebCrawler(config=browser_config) as crawler:
                 result = await asyncio.wait_for(
@@ -444,8 +446,8 @@ async def scrape_page_content_crawl4ai(url: str, snippet=None, verbose: bool = F
         raw_markdown = result.markdown.raw_markdown
 
         # if the markdown is too long, we truncate it
-        if len(fit_markdown) > 10000:
-            fit_markdown = find_snippet(fit_markdown, snippet, 10000)
+        if len(fit_markdown) > 10000 and snippet is not None:
+            fit_markdown = find_snippet(fit_markdown.split("\n"), snippet, 10000)
 
         return True, fit_markdown, raw_markdown
 

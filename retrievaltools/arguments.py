@@ -117,7 +117,7 @@ class RetrieverOptions:
     port: int = 8000
     api_key: Optional[str] = None
     use_cache: bool = True
-    use_crawl4ai: bool = False
+    web_scraping: str = "none" # or "crawl4ai" or "bs4"
     cache_path: Optional[str] = None
     topk: int = 10
     verbose: bool = False
