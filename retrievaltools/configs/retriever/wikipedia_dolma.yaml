@@ -1,0 +1,35 @@
+retriever_options:
+  retriever_type: dense
+  include_corpus: false
+  host: localhost
+  port: 8000
+  snippet_length: 100
+
+
+model_options:
+  model_name_or_path: /mnt/data-gcp/users/howard/models/Qwen3-Embedding-0.6B
+  # supports upto 32k, but too long can still cause degradation
+  input_max_length: 8192
+  use_hf: true
+  pooling: "last"
+  normalize_embedding: true
+  batch_size: 64
+  passage_prompt: ""
+  query_prompt: "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: "
+
+
+index_options:
+  n_subquantizers: 0
+  n_bits: 0
+  batch_size: 2048
+  no_fp16: false
+  embedding_files: [/home/hyen/project/embeddings/Qwen3-0.6B/wikipedia_dolma/*.pkl]
+
+
+corpus_options:
+  paths:
+    - /mnt/data-gcp/users/howard/data/dolma-1_7/wiki-*.json.gz
+  text_field: text
+  id_field: id
+  metadata_fields: [metadata]
+  num_workers: 8

@@ -57,7 +57,7 @@ class CorpusOptions:
 
     num_workers: int = 8
     count_only: bool = False
-    corpus_type: str = "chunk" # "chunk" or "normal"
+    corpus_type: str = "normal" # "normal" or "chunk"
 
     def __post_init__(self):
         self.paths = [item for sublist in self.paths for item in glob.glob(sublist)]
@@ -67,6 +67,7 @@ class CorpusOptions:
 class ShardOptions:
     num_shards: int = 1
     shard_id: int = 0
+    shard_files: bool = True
 
     def __post_init__(self):
         if self.num_shards <= 0:
@@ -82,7 +83,12 @@ class IndexOptions:
     n_bits: int = 8 # Number of bits per subquantizer
     batch_size: int = 2048 # Batch size for index search
     no_fp16: bool = False # Inference in fp32 instead of fp16 (not necessary most times)
-    embedding_files: List[str] = field(default_factory=list)
+    embedding_files: str | List[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if isinstance(self.embedding_files, str):
+            self.embedding_files = [self.embedding_files]
+        self.embedding_files = [item for sublist in self.embedding_files for item in glob.glob(sublist)]
 
 
 @dataclass
@@ -121,6 +127,7 @@ class RetrieverOptions:
     cache_path: Optional[str] = None
     topk: int = 10
     verbose: bool = False
+    snippet_length: int | None = None
 
     def __post_init__(self):
         if self.cache_path is not None:

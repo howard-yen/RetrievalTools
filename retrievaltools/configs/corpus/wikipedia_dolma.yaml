@@ -1,0 +1,11 @@
+# this is the wikipedia 2018 corpus from DPR , split into 100 word passages
+corpus_options:
+  paths:
+    - /mnt/data-gcp/users/howard/data/dolma-1_7/wiki-*.json.gz
+  text_field: text
+  id_field: id
+  metadata_fields: [metadata]
+  num_workers: 8
+
+shard_options:
+  shard_files: false

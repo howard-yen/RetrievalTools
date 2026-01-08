@@ -7,14 +7,19 @@ import requests
 import time
 import numpy as np
 import torch
-from typing import Tuple, List
+from typing import Tuple, List, Dict
 from rouge_score import rouge_scorer
 from urllib.parse import urlparse
 from tqdm.contrib.concurrent import thread_map
+import bm25s
+import Stemmer
+from diskcache import Cache
+from functools import lru_cache
 
 import logging
-import errno
-import fcntl
+
+CACHE_PATH = os.environ.get("RT_CACHE_PATH", "./cache")
+cache = Cache(CACHE_PATH)
 
 # Suppress crawl4ai logging
 logging.getLogger("crawl4ai").setLevel(logging.WARNING)
@@ -144,100 +149,6 @@ def f1_score(true_set, pred_set):
     return 2 * (precision * recall) / (precision + recall)
 
 
-def find_snippet(texts: List[str], snippet=None, num_characters=4000):
-    # find the best snippet in the text that matches the snippet
-    # take the surrounding text of the snippet
-    if snippet is None:
-        return "\n".join(texts)[:num_characters]
-
-    # we iterate through the texts, calculate the ROUGE score between the snippet and the text
-    # we mainly care about the recall score of ROUGE-L (most of the snippet is present in the long text)
-    # take the text with the highest recall score and the surrounding text of the snippet
-
-    positions = []
-    start = 0
-    best_recall = 0
-    best_idx = 0
-    for i, text in enumerate(texts):
-        score = scorer.score(target=snippet, prediction=text)
-        recall = score['rougeL'].recall
-        if recall > best_recall:
-            best_recall = recall
-            best_idx = i
-        positions.append((start, start + len(text)))
-        start += len(text) + 1
-    
-    best_len = len(texts[best_idx])
-    num_characters = num_characters - best_len
-    final_text = []
-    for i, pos in enumerate(positions):
-        if (pos[0] >= positions[best_idx][0] - num_characters/2 and pos[1] <= positions[best_idx][1] + num_characters/2) or i == best_idx:
-            final_text.append(texts[i])
-    
-    return "\n".join(final_text)
-    
-
-# adapted from https://github.com/idavidrein/gpqa/blob/56686c06f5e19865c153de0fdb11be3890014df7/baselines/open_book.py#L38
-def scrape_html(response, snippet=None, num_characters=4000) -> Tuple[bool, str, str]:
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(response.content, "html.parser")
-
-    # Remove unwanted elements
-    for element in soup.find_all(['script', 'style', 'nav', 'footer', 'iframe']):
-        element.decompose()
-
-    # Keep track of character positions for each element
-    texts = []
-    for element in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'li']):
-        text = element.text.strip()
-        # Add header markers for better context
-        if element.name.startswith('h'):
-            text = f"[{element.name.upper()}] {text}"
-        
-        if len(text) == 0:
-            continue
-        
-        texts.append(text)
-
-    # Join all text for snippet matching
-    fulltext = "\n".join(texts)
-    final_snippet = find_snippet(texts, snippet, num_characters)
-
-    return True, final_snippet, fulltext
-
-
-def scrape_pdf(response, snippet=None, num_characters=4000) -> Tuple[bool, str, str]:
-    import fitz
-    with fitz.open(stream=response.content, filetype="pdf") as doc:
-        text = ""
-        for page in doc:
-            text += page.get_text()
-    
-    texts = text.split("\n")
-    final_snippet = find_snippet(texts, snippet, num_characters)
-    return True, final_snippet, text
-
-
-def scrape_page_content(url, snippet=None, num_characters=10000) -> Tuple[bool, str, str]:
-    """
-    Try to scrape the page content and return the best snippet that matches the snippet.
-    If no snippet is provided, return the first num_characters of the page.
-    Returns a tuple of (success, snippet, fulltext).
-    """
-    try:
-        response = requests.get(url, headers=HEADERS, timeout=(3, 5))  # (connect timeout, read timeout)
-        response.raise_for_status()
-        content_type = response.headers.get('Content-Type', '')
-        if "pdf" in content_type:
-            return scrape_pdf(response, snippet, num_characters)
-        else:
-            return scrape_html(response, snippet, num_characters)
-
-    except Exception as e:
-        success = False
-        return success, f"Failed to scrape the page due to {str(e)}", ""
-
-
 def detect_content_type(url: str) -> str:
     parsed_url = urlparse(url)
     if parsed_url.path.lower().endswith('.pdf'):
@@ -247,287 +158,123 @@ def detect_content_type(url: str) -> str:
         response = requests.head(url, headers=HEADERS, timeout=(3, 5))
         response.raise_for_status()
         content_type = response.headers.get('Content-Type', '')
-        if "pdf" in content_type:
-            return "pdf"
-        else:
-            return "html"
+        return "pdf" if "pdf" in content_type else "html"
     except Exception as e:
         return "html"
 
 
-async def scrape_page_content_crawl4ai_batch(urls: List[str], snippets: List[str] = None, verbose: bool = False) -> Tuple[bool, str, str]:
-    from crawl4ai.processors.pdf import PDFCrawlerStrategy, PDFContentScrapingStrategy
-    from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
-    from crawl4ai.content_filter_strategy import PruningContentFilter
-    from crawl4ai.async_dispatcher import MemoryAdaptiveDispatcher
-    from crawl4ai import CrawlerRunConfig, AsyncWebCrawler, CrawlerMonitor, RateLimiter, BrowserConfig
-    
-    prune_filter = PruningContentFilter(
-        threshold=0.3,
-        threshold_type="fixed",  
-        min_word_threshold=3
-    )
+def find_snippet(texts: List[str], snippet: str, num_characters: int = 4000, scoring_func: str = "rouge"):
+    """
+    We iterate through the texts, break them into chunks of 1000 characters, and then use the scoring function to find the best chunk.
+    The text is already split into arbitrary chunks.
+    The scoring function can be "rouge" or "bm25".
+    We also take the surrounding text of the snippet to fill up the num_characters.
+    """
+    assert scoring_func in ["rouge", "bm25"], "Scoring function must be either 'rouge' or 'bm25'"
+    positions = []
+    start = 0
+    best_recall = 0
+    best_idx = 0
 
-    dispatcher = MemoryAdaptiveDispatcher(
-        memory_threshold_percent=85.0,
-        check_interval=2.0,
-        max_session_permit=5,
-        fairness_timeout=120,
-        rate_limiter=RateLimiter(
-            base_delay=(0.5, 1.0),
-            max_delay=5.0,
-            max_retries=3
-        ),
-    )
+    if scoring_func == 'bm25':
+        stemmer = Stemmer.Stemmer('english')
+        corpus_tokens = bm25s.tokenize(texts, stopwords='en', stemmer=stemmer)
+        retriever = bm25s.BM25()
+        retriever.index(corpus_tokens)
+        query_tokens = bm25s.tokenize(snippet, stopwords='en', stemmer=stemmer)
+        results, scores = retriever.retrieve(query_tokens, k=1)
+        best_idx = int(results[0, 0])
 
-    md_generator = DefaultMarkdownGenerator(
-        content_filter=prune_filter,
-        options={"ignore_links": False}
-    )
+    for i, text in enumerate(texts):
+        if scoring_func == "rouge":
+            score = scorer.score(target=snippet, prediction=text)
+            recall = score['rougeL'].recall
+            if recall > best_recall:
+                best_recall = recall
+                best_idx = i
+        positions.append((start, start + len(text)))
+        start += len(text) + 1
 
+    best_len = len(texts[best_idx])
+    num_characters = num_characters - best_len
+    final_text = []
+    for i, pos in enumerate(positions):
+        if (pos[0] >= positions[best_idx][0] - num_characters/2 and pos[1] <= positions[best_idx][1] + num_characters/2) or i == best_idx:
+            final_text.append(texts[i])
+
+    return "\n".join(final_text)
+
+
+async def scrape_pdf(url: str) -> Tuple[bool, str, str]:
+    import fitz
+    response = requests.get(url, headers=HEADERS, timeout=(3, 5))  # (connect timeout, read timeout)
+    response.raise_for_status()
+    with fitz.open(stream=response.content, filetype="pdf") as doc:
+        text = ""
+        for page in doc:
+            text += page.get_text()
+
+    texts = text.split("\n")
+
+    return True, text, text
+
+
+async def scrape_html(url: str) -> Tuple[bool, str, str]:
+    prune_filter = PruningContentFilter(threshold=0.4, threshold_type="dynamic", min_word_threshold=3)
+    md_generator = DefaultMarkdownGenerator(content_filter=prune_filter, options={"ignore_links": False})
     browser_config = BrowserConfig(
-        headless=True,
-        verbose=verbose,  # Suppress crawl4ai browser logging
-        extra_args=[
-          "--disable-gpu",
-          "--disable-dev-shm-usage",
-          "--no-sandbox",
-          "--disable-extensions",
-          "--disable-background-timer-throttling",
-          "--disable-backgrounding-occluded-windows",
-          "--disable-renderer-backgrounding"
-        ]
+        headless=True, verbose=False,
+        extra_args=["--disable-gpu", "--disable-dev-shm-usage", "--no-sandbox", "--disable-extensions"]
     )
+    crawler_config = CrawlerRunConfig(markdown_generator=md_generator, page_timeout=15000, verbose=False)
 
-    def process_result(result, i, snippets):
-        if result is None or not result.success:
-            return (False, f"Failed to scrape the page due to {result.error_message}", "")
-        else:
-            fit_markdown = result.markdown.fit_markdown
-            if snippets is not None:
-                snippet = snippets[i]
-                if len(fit_markdown) > 10000:
-                    fit_markdown = find_snippet(fit_markdown.split("\n"), snippet, 10000)
-            return (True, fit_markdown, result.markdown.raw_markdown)
+    async with AsyncWebCrawler(config=browser_config) as crawler:
+        result = await asyncio.wait_for(crawler.arun(url=url, config=crawler_config), timeout=30)
 
-    try:
-        content_types = thread_map(detect_content_type, urls, desc="Detecting content types", disable=not verbose)
-        pdf_urls = [url for url, content_type in zip(urls, content_types) if content_type == "pdf"]
-        pdf_idxs = [i for i, content_type in enumerate(content_types) if content_type == "pdf"]
-        html_urls = [url for url, content_type in zip(urls, content_types) if content_type == "html"]
-        html_idxs = [i for i, content_type in enumerate(content_types) if content_type == "html"]
-        all_results = [None for _ in range(len(urls))]
+    if not result.success:
+        return False, f"Failed to scrape the page due to {result.error_message}", ""
 
-        if len(pdf_urls) > 0:
-            # async with AsyncWebCrawler(config=browser_config, crawler_strategy=PDFCrawlerStrategy()) as crawler:
-            #     results = await crawler.arun_many(
-            #         urls=pdf_urls,
-            #         config=CrawlerRunConfig(
-            #             markdown_generator=md_generator,
-            #             scraping_strategy=PDFContentScrapingStrategy(),
-            #             page_timeout=10,
-            #             exclude_external_images=True,
-            #         ),
-            #         dispatcher=dispatcher,
-            #         only_text=True,
-            #     )
-            # for i, result in enumerate(results):
-            #     all_results[pdf_idxs[i]] = process_result(result, i, snippets)
+    if len(result.markdown.raw_markdown.strip()) == 0:
+        return False, f"Failed to scrape the page, returned empty content.", ""
 
-            results = thread_map(scrape_page_content, pdf_urls, [snippets[i] for i in pdf_idxs], desc="Scraping PDFs", disable=not verbose)
-            for i, result in enumerate(results):
-                all_results[pdf_idxs[i]] = results[i]
+    fit_markdown = result.markdown.fit_markdown
+    raw_markdown = result.markdown.raw_markdown
 
-        if len(html_urls) > 0:
-            try:
-                import asyncio
-                async with AsyncWebCrawler(config=browser_config) as crawler:
-                    results = await asyncio.wait_for(
-                        crawler.arun_many(
-                            urls=html_urls,
-                            config=CrawlerRunConfig(
-                                markdown_generator=md_generator,
-                                page_timeout=15000,
-                                exclude_external_images=True,
-                                word_count_threshold=3,
-                                verbose=verbose,  # Suppress crawl4ai run logging
-                            ),
-                            dispatcher=dispatcher,
-                        ),
-                        timeout=300
-                    )
-                for i, result in enumerate(results):
-                    all_results[html_idxs[i]] = process_result(result, i, snippets)
-            except (asyncio.TimeoutError, Exception) as e:
-                print(f"Crawl4ai batch processing failed: {e}. Falling back to individual requests.")
-                for i, url in enumerate(html_urls):
-                    try:
-                        snippet = snippets[html_idxs[i]] if snippets else None
-                        result = await asyncio.wait_for(
-                            scrape_page_content_crawl4ai(url, snippet, verbose=verbose),
-                            timeout=30
-                        )
-                        all_results[html_idxs[i]] = result
-                    except Exception:
-                        fallback_result = scrape_page_content(url, snippet if snippets else None)
-                        all_results[html_idxs[i]] = fallback_result
+    return True, fit_markdown, raw_markdown
 
-        return all_results
-
-    except Exception as e:
-        raise e
-        return None
+MAX_RETRIES = 3
+INITIAL_RETRY_DELAY = 0.2
 
 
-async def scrape_page_content_crawl4ai(url: str, snippet=None, verbose: bool = False) -> Tuple[bool, str, str]:
-    from crawl4ai.processors.pdf import PDFCrawlerStrategy, PDFContentScrapingStrategy
-    from crawl4ai.markdown_generation_strategy import DefaultMarkdownGenerator
-    from crawl4ai.content_filter_strategy import BM25ContentFilter, PruningContentFilter
-    from crawl4ai import CrawlerRunConfig, AsyncWebCrawler, BrowserConfig
-    import asyncio
+@lru_cache(maxsize=8192)
+@cache.memoize(typed=True, expire=1e7, tag="serper")
+def serper_search(query: str, topk: int = 10) -> List[Dict]:
+    url = "https://google.serper.dev/search"
+    headers = {"X-API-KEY": os.environ["SERPER_API_KEY"], 'Content-Type': 'application/json'}
+    payload = json.dumps({"q": query, "num": topk})
 
-    prune_filter = PruningContentFilter(
-        threshold=0.4,
-        threshold_type="dynamic",  
-        min_word_threshold=3
-    )
-
-    md_generator = DefaultMarkdownGenerator(
-        content_filter=prune_filter,
-        options={"ignore_links": False}
-    )
-
-    browser_config = BrowserConfig(
-        headless=True,
-        verbose=verbose,  # Suppress crawl4ai browser logging
-        extra_args=[
-            "--disable-gpu",
-            "--disable-dev-shm-usage", 
-            "--no-sandbox",
-            "--disable-extensions",
-        ]
-    )
-
-    try:
-        content_type = detect_content_type(url)
-        if content_type == "pdf":
-            # async with AsyncWebCrawler(config=browser_config, crawler_strategy=PDFCrawlerStrategy()) as crawler:
-            #     result = await asyncio.wait_for(
-            #         crawler.arun(
-            #             url=url,
-            #             config=CrawlerRunConfig(
-            #                 markdown_generator=md_generator,
-            #                 scraping_strategy=PDFContentScrapingStrategy(),
-            #                 page_timeout=15000,
-            #                 verbose=verbose,  # Suppress crawl4ai run logging
-            #             )
-            #         ),
-            #         timeout=30
-            #     )
-            result = scrape_page_content(url, snippet, 10000)
-            return result
-        else:
-            async with AsyncWebCrawler(config=browser_config) as crawler:
-                result = await asyncio.wait_for(
-                    crawler.arun(
-                        url=url,
-                        config=CrawlerRunConfig(
-                            markdown_generator=md_generator,
-                            page_timeout=15000,
-                            verbose=verbose,  # Suppress crawl4ai run logging
-                        )
-                    ),
-                    timeout=30
-                )
-        if not result.success:
-            return False, f"Failed to scrape the page due to {result.error_message}", ""
-
-        fit_markdown = result.markdown.fit_markdown 
-        raw_markdown = result.markdown.raw_markdown
-
-        # if the markdown is too long, we truncate it
-        if len(fit_markdown) > 10000 and snippet is not None:
-            fit_markdown = find_snippet(fit_markdown.split("\n"), snippet, 10000)
-
-        return True, fit_markdown, raw_markdown
-
-    except Exception as e:
-        return False, f"Failed to scrape the page due to {str(e)}", ""
-
-
-class ThreadSafeFileHandler:
-    def __init__(self, filepath):
-        self.filepath = filepath
-        
-    def _acquire_lock(self, file_obj):
+    for attempt in range(MAX_RETRIES):
         try:
-            fcntl.flock(file_obj, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except IOError as e:
-            if e.errno != errno.EAGAIN:
-                raise
-            # If file is locked, retry with exponential backoff
-            retries = 5
-            base_wait_time = 0.1
-            for i in range(retries):
-                time.sleep(base_wait_time * (2 ** i))
-                try:
-                    fcntl.flock(file_obj, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return True
-                except IOError as e:
-                    if e.errno != errno.EAGAIN:
-                        raise
-                    continue
-            return False
-        return True
-    
-    def _release_lock(self, file_obj):
-        fcntl.flock(file_obj, fcntl.LOCK_UN)
+            response = requests.post(url=url, headers=headers, data=payload)
+            response.raise_for_status()
+        except requests.exceptions.Timeout as e:
+            if attempt < MAX_RETRIES - 1:
+                delay = INITIAL_RETRY_DELAY * (attempt + 1)
+                time.sleep(delay)
+                continue
+            else:
+                raise e
+        except Exception as e:
+            raise e
 
-    def _ensure_file_exists(self):
-        if not os.path.exists(self.filepath):
-            os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
-            with open(self.filepath, 'w') as f:
-                json.dump({}, f)
-    
-    def read_data(self):
-        self._ensure_file_exists()
-        
-        with open(self.filepath, 'r+') as file_obj:
-            if not self._acquire_lock(file_obj):
-                raise TimeoutError("Could not acquire lock for reading")
-            
-            try:
-                file_obj.seek(0)
-                data = json.load(file_obj)
-                return data
-            finally:
-                self._release_lock(file_obj)
-    
-    def update_data(self, update_func):
-        """
-        Update the file using the provided update function.
-        update_func should take the current data as input and return the updated data.
-        """
-        self._ensure_file_exists()
-        
-        with open(self.filepath, 'r+') as file_obj:
-            if not self._acquire_lock(file_obj):
-                raise TimeoutError("Could not acquire lock for updating")
-            
-            try:
-                file_obj.seek(0)
-                try:
-                    current_data = json.load(file_obj)
-                except json.JSONDecodeError:
-                    current_data = {}
-                
-                # Apply the update function
-                updated_data = update_func(current_data)
-                
-                # Write the updated data back to the file
-                file_obj.seek(0)
-                file_obj.truncate()
-                json.dump(updated_data, file_obj)
-                return updated_data
-            finally:
-                self._release_lock(file_obj)
+        if response.status_code in [408, 500, 502, 503, 504]:
+            if attempt < MAX_RETRIES - 1:
+                delay = INITIAL_RETRY_DELAY * (attempt + 1)
+                time.sleep(delay)
+                continue
+            else:
+                raise Exception(response.text)
+
+    response = response.json()
+    return response
+

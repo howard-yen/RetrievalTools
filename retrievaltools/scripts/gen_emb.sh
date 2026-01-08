@@ -41,7 +41,7 @@ echo "Cache                          = $TRANSFORMERS_CACHE"
 
 # mamba init
 #mamba activate f1
-mamba activate xform
+# mamba activate xform
 
 IDX=$SLURM_ARRAY_TASK_ID
 if [[ -z $IDX ]]; then
@@ -50,14 +50,9 @@ if [[ -z $IDX ]]; then
 fi
 
 # Submit jobs.
-# You can use srun to run multiple scripts in the same job in parallel (make sure to use & at the end!). Note how you can specify the resources used for each srun and make them exclusive using the --exclusive flag.
-#srun --gres=gpu:1 -n 1 --mem=24G --exclusive python scripts/train_model.py --model_type ${model} --learning_rate ${lr} --rnn_dropout ${dropout} --checkpoint_path ${OUT_DIRECTORY}/${model}.lr${lr}.dim${dim}.dropout${dropout}.pt --rnn_wordvec_dim ${dim} --rnn_num_layers 2  --tags ${tag} &
 
-# data_path="/scratch/gpfs/hyen/data/kilt/psgs_w100.tsv"
-# data_path="/scratch/gpfs/hyen/data/kilt/kilt_wikipedia.jsonl"
-
-PREFIX="dclm_baseline_dedup_256"
-N=500
+PREFIX="wikipedia_dolma"
+N=1000
 
 # PREFIX="wikipedia_dpr"
 # PREFIX="wikipedia_kilt"
@@ -66,26 +61,29 @@ N=500
 # PREFIX="fineweb_edu_256"
 # N=250
 
-MODEL="gte-Qwen2-1.5B-instruct"
+MODEL="Qwen3-0.6B"
 
 # OUTPUT_DIR="embeddings/$(basename $MODEL)/$PREFIX"
-OUTPUT_DIR="/scratch/gpfs/DANQIC/hyen/embeddings/$(basename $MODEL)/$PREFIX"
+OUTPUT_DIR="/home/hyen/project/embeddings/$(basename $MODEL)/$PREFIX-test"
 
 echo "OUTPUT_DIR        = $OUTPUT_DIR"
 echo "MODEL             = $MODEL"
 echo "PREFIX            = $PREFIX"
 echo "IDX               = $IDX / $N"
 
+# for IDX in {0..9}; do
+
 python generate_passage_embeddings.py \
     --config configs/models/$MODEL.yaml configs/corpus/$PREFIX.yaml \
     --output_dir $OUTPUT_DIR \
     --output_prefix $PREFIX  \
     --shard_id $IDX --num_shards $N \
-    --input_max_length 512 \
-    --batch_size 256 \
-    --save_text
+    --input_max_length 2048 \
+    --save_text --overwrite --batch_size 32
+
+# done
 
 wait;
 
 # Finish the script
-#exit
+exit

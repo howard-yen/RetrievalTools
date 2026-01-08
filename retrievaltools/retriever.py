@@ -1,50 +1,73 @@
 import os
 import json
-from typing import Optional, List, Dict, Any, Union, Tuple
 import random
 import time
-from dataclasses import asdict
 import requests
-import threading
 import asyncio
+
+from typing import Optional, List, Dict, Any, Union
+from functools import lru_cache
+from dataclasses import dataclass
 from tqdm import tqdm
+from diskcache import Cache
 
 from retrievaltools.arguments import CorpusOptions, IndexOptions, ModelOptions, RetrieverOptions
-from retrievaltools.utils import scrape_page_content, init_logger, ThreadSafeFileHandler, scrape_page_content_crawl4ai_batch
+from retrievaltools.utils import init_logger, serper_search, scrape_pdf, scrape_html, detect_content_type
 
 logger = init_logger(__name__)
+cache = Cache(os.environ.get("RT_CACHE_PATH", "./cache"))
+
+@dataclass
+class QueryResult:
+    # required for all retrievers
+    id: str
+    position: int
+    
+    # optional
+    title: Optional[str] = None
+    text: Optional[str] = None
+    score: Optional[float] = None
+
+
+@dataclass
+class RetrieveResult:
+    query: str
+    results: List[QueryResult]
+    formatted_output: str
+
+
+@dataclass
+class VisitResult:
+    id: str
+    content: str
 
 
 class Retriever():
     """
     The retriever class is a simple interface that takes queries as inputs and return results. 
-
-    In the results, we guarantee that "text" is present. Other fields are dependent on the specific retriever (see subclasses).
-
-    We also support caching the results of the retrieval.
-    The cache is a dictionary that maps queries to results, where the results are the same format as the output of the retrieve method.
-    We recommend using the cache to speed up the retrieval process and also save and load the cache to disk.
-    Make to handle race conditions when saving and loading the cache.
+    The retriever also supports visiting a specific document given its id (e.g., URL for web search retriever).
     """
-    def __init__(self, cache_path: Optional[str] = None):
-        self.cache = {}
-        if cache_path is not None:
-            self.load_cache(cache_path)
+    def __init__(self):
+        pass
     
-    def retrieve(self, query: Union[str, List[str]], topk: int = 10) -> List[List[Dict[str, Any]]]:
+    def retrieve(self, query: Union[str, List[str]], topk: int = 10) -> List[RetrieveResult]:
+        """
+        Given queries, return the topk results. 
+        
+        The output is a list of RetrieveResult objects. Each RetrieveResult object contains the following:
+         - query: str = the query
+         - results: List[QueryResult] = List of QueryResult objects, note that some content may be retriever-dependent
+         - formatted_output: str = A formatted string of the results, which is also retriever-specific
+        """
         raise NotImplementedError("Retrieve is an abstract method")
 
-    def format_results(self, results: List[Dict[str, Any]]) -> str:
-        raise NotImplementedError("Format results is an abstract method")
+    def visit(self, id: str) -> VisitResult:
+        """
+        Fetch the content of a document given its id.
 
-    def load_cache(self, cache_path: str):
-        assert os.path.exists(cache_path), f"Cache file {cache_path} does not exist"
-        with open(cache_path, "r") as f:
-            self.cache = json.load(f)
-
-    def save_cache(self, cache_path: str):
-        with open(cache_path, "w") as f:
-            json.dump(self.cache, f)
+        The output contains the id and the content of the document.
+        """
+        raise NotImplementedError("Visit is an abstract method")
 
 
 class DenseRetriever(Retriever):
@@ -53,11 +76,12 @@ class DenseRetriever(Retriever):
     Just avoiding importing classes unless needed...
     """
     def __init__(self,
-        index= None, # Optional[DenseIndex]
+        index = None, # Optional[DenseIndex]
         corpus = None, # Optional[Corpus]
         index_options: Optional[IndexOptions] = None,
         encoder_options: Optional[ModelOptions] = None,
         corpus_options: Optional[CorpusOptions] = None,
+        snippet_length: int | None = None,
     ):
         """
         Initialize the DenseIndex. 
@@ -73,13 +97,14 @@ class DenseRetriever(Retriever):
                 The options for the encoder
             corpus_options: Optional[CorpusOptions]
                 The options for the corpus
+            snippet_length: int
+                The length of the snippet to return in formatted search results. Return all text if None
         """
-        from retrievaltools.encoder import load_encoder
-        from retrievaltools.index import load_index
-        from retrievaltools.data import load_corpus
 
         if index is None:
             assert encoder_options is not None and index_options is not None, "encoder_options and index_options must be provided if index is not provided"
+            from retrievaltools.encoder import load_encoder
+            from retrievaltools.index import load_index
             encoder = load_encoder(encoder_options)
             self.index = load_index(index_options, encoder)
         else:
@@ -87,27 +112,28 @@ class DenseRetriever(Retriever):
 
         # if corpus is not provided, we will not map the ids back to the original data 
         # (since the index may already contain all the information we need if the texts were saved)
-        if corpus is None:
-            if corpus_options is not None:
-                self.corpus = load_corpus(corpus_options)
-            else:
-                self.corpus = None
-        else:
+        self.corpus = None
+        if corpus is not None:
             self.corpus = corpus
+        elif corpus_options is not None:
+            from retrievaltools.data import load_corpus
+            self.corpus = load_corpus(corpus_options)
+
+        self.snippet_length = snippet_length
 
 
+    # HY: I don't think we should do the diskcache here, because the function depends on the model and corpus
+    # @lru_cache(maxsize=8192)
     def retrieve(self, query: Union[str, List[str]], topk: int = 10) -> List[List[Dict[str, Any]]]:
         """
         Retrieve the topk results for the query.
-        The key difference between this and index.get_topk is that this will return the results in a more user-friendly format. We need to map the ids back to the original data using a corpus.
-
-        In the results, we guarantee "id", "score", and "text" are present. There may be other metadata fields depending on the corpus.
+        Each query results will always have "id", "position", and "score".
+        If the corpus is provided, we will also have "text" and "title" (if available in the corpus).
         """
         if isinstance(query, str):
             query = [query]
 
         results = self.index.get_topk(query, topk=topk)
-        # map the ids back to the original data
         outputs = []
         
         for query, res in zip(query, results):
@@ -115,21 +141,55 @@ class DenseRetriever(Retriever):
             for idx in range(len(res["id"])):
                 ctx = {k: v[idx] for k, v in res.items()}
                 ctx["position"] = idx + 1
+                # HY: not sure why texts can be dict... should probably fix later
                 if "texts" in ctx and isinstance(ctx["texts"], dict):
                     ctx.update(ctx.pop("texts"))
+                # if corpus is provided, get additional metadata from the corpus
                 if self.corpus is not None:
                     ctx.update(self.corpus.get_item(res["id"][idx]))
                 ctxs.append(ctx)
-            outputs.append(ctxs)
+            ctxs = [QueryResult(ctx["id"], ctx["position"], ctx.get("title", None), ctx.get("text", None), ctx.get("score", None)) for ctx in ctxs]
+            outputs.append(RetrieveResult(query, ctxs, self.format_results(query, ctxs)))
+        
         return outputs
 
 
-    def format_results(self, results: List[Dict[str, Any]]) -> str:
+    @lru_cache(maxsize=8192)
+    def visit(self, id: str, query: str, content_length: int = 10000, scoring_func: str = "rouge", chunking_func: str = "newline") -> str:
+        """
+        Fetch the content of a document given its id. 
+        Returns the text of the document, with the query and the content length used to find the most relevant snippet.
+        """
+        if self.corpus is None:
+            raise ValueError("Corpus is not provided. Please provide a corpus when initializing the retriever if you want to use the visit method.")
+        text = self.corpus.get_text(id)
+
+        content = text[:content_length]
+        if query is not None:
+            content = find_snippet(text, query, content_length, scoring_func, chunking_func)
+        return content
+
+
+    def format_results(self, query: str, results: List[QueryResult]) -> str:
         """
         Format the results into a string.
+        No need to cache.
         """
-        template = "Result {position}\nTitle: {title}\nURL: {url}\n{long_snippet}"
-        return "\n".join([template.format(**r) for r in results])
+        # s = f"Query: {query}\nThe retriever returned {len(results)} results:\n\n"
+        s = f"The retriever returned {len(results)} results:\n\n"
+
+        for res in results:
+            s += f"<Result {res.position}>\n<Document ID>{res.id}</Document ID>\n"
+            if res.title is not None:
+                s += f"<Title>{res.title}</Title>\n"
+            if res.text is not None:
+                if self.snippet_length is not None:
+                    s += f"<Text>\n{res.text[:self.snippet_length]}...\n</Text>\n"
+                else:
+                    s += f"<Text>\n{res.text}\n</Text>\n"
+            s += f"</Result {res.position}>\n\n"
+
+        return s
 
 
 class WebSearchRetriever(Retriever):
@@ -140,46 +200,21 @@ class WebSearchRetriever(Retriever):
     """
     def __init__(
         self, 
-        api_key: Optional[str] = None, 
-        base_url: str = "https://google.serper.dev/search", 
-        min_delay: float = 0.001, 
-        max_delay: float = 0.003,
-        use_cache: bool = True,
         web_scraping: str = "none",
-        verbose: bool = False,
     ):
-        if api_key is None:
-            self.api_key = os.environ.get("SERPER_API_KEY")
-            assert self.api_key is not None, "SERPER_API_KEY must be set"
-        else:
-            self.api_key = api_key
-        self.base_url = base_url
-        self.min_delay = min_delay
-        self.max_delay = max_delay
-        self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Connection': 'keep-alive',
-            "X-API-KEY": self.api_key,
-            'Content-Type': 'application/json'
-        }
-        self.use_cache = use_cache
         self.web_scraping = web_scraping
-        self.verbose = verbose
-        if use_cache:
-            self.CACHE_PATH = "cache/serper_search_cache.json"
-            self.cache_file = ThreadSafeFileHandler(self.CACHE_PATH)
-            self.cache = self.cache_file.read_data()
         
+
     def _add_delay(self):
         """Add a random delay between requests to appear more human-like"""
         delay = random.uniform(self.min_delay, self.max_delay)
         time.sleep(delay)
 
+
     def retrieve(self, query: Union[str, List[str]], topk: int = 10) -> List[List[Dict[str, Any]]]:
         """
         Retrieve the topk results for the query.
+        We only return the snippet here, for full text, use the visit method.
         
         In Serper, the results contain: "title", "url", "date", "text", "position"
         """
@@ -189,73 +224,57 @@ class WebSearchRetriever(Retriever):
             query = [query]
 
         for q in tqdm(query, desc="Retrieving from Serper", disable=not self.verbose):
-            if self.use_cache and q in self.cache:
-                results.append(self.cache[q])
-                continue
-           
-            payload = json.dumps({
-                "q": q,
-                "num": 10,
-            })
-            response = requests.post(url=self.base_url, data=payload, headers=self.headers)
-            results.append(response.json())
-            if self.use_cache:
-                self.cache[q] = response.json()
-        
-        # update cache
-        if self.use_cache:
-            threading.Thread(target=lambda: self.cache_file.update_data(lambda x: x.update(self.cache) or x), daemon=True).start()
+            response = serper_search(q, topk=topk)
+            results.append(response['organic'])
 
         # further processing of the results
         outputs = []
-        results = [r for r in results if 'organic' in r]
-        
-        for idx, result in enumerate(tqdm(results, desc="Scraping results", disable=not self.verbose)):
-            urls = [r['link'] for r in result['organic']]
-            snippets = [r['snippet'] if 'snippet' in r else query[idx] for r in result['organic']]
-            if self.web_scraping == "crawl4ai":
-                try:
-                    # Try to use existing event loop if available
-                    loop = asyncio.get_running_loop()
-                    scraped_results = loop.run_until_complete(scrape_page_content_crawl4ai_batch(urls, snippets, verbose=self.verbose))
-                except RuntimeError:
-                    # No running loop, create a new one
-                    scraped_results = asyncio.run(scrape_page_content_crawl4ai_batch(urls, snippets, verbose=self.verbose))
-            elif self.web_scraping == "bs4":
-                scraped_results = [scrape_page_content(url, snippet=snippet, num_characters=2000) for url, snippet in zip(urls, snippets)]
-            else:
-                scraped_results = [(False, "", "") for _ in urls]
-            
-            for r, (success, snippet, fulltext) in zip(result['organic'], scraped_results):
-                r["text"] = r.pop("snippet", "")
-                r["url"] = r.pop("link")
 
-                if success:
-                    r["long_snippet"] = snippet
-                    r["full_text"] = fulltext
-
-            outputs.append(result['organic'])
-
+        for query, result in zip(query, results):
+            result = [QueryResult(
+                id=r['link'],
+                position=i+1,
+                title=r.get('title', None),
+                text=r.get('snippet', None),
+                score=r.get('score', None),
+            ) for i, r in enumerate(result)]
+            outputs.append(RetrieveResult(query, result, self.format_results(query, result)))
+       
         return outputs
+    
+
+    def visit(self, url: str, query: str, content_length: int = 10000, scoring_func: str = "rouge", chunking_func: str = "newline") -> str:
+        """
+        Fetch the content of a document given its url.
+        Returns the text of the document, with the query and the content length used to find the most relevant snippet.
+        Returns None if the content fails to be extracted.
+        """
+        try:
+            content_type = detect_content_type(url)
+            if content_type == "pdf":
+                result = asyncio.run(scrape_pdf(url))
+            else:
+                result = asyncio.run(scrape_html(url))
+            return result
+        except Exception as e:
+            return None
+
 
     def format_results(self, results: List[Dict[str, Any]], topk: int = 10) -> str:
         """
         Format the results into a string.
         """
+        # s = f"Query: {query}\nThe search engine returned {len(results)} results:\n\n"
+        s = f"The search engine returned {len(results)} results:\n\n"
 
-        if self.web_scraping == "none":
-            keys = ["title", "url", "text"]
-            template = "<Search Result {position}>\n<Title: {title}>\n<URL: {url}>\n{text}\n</Search Result {position}>"
-            
-        else:       
-            keys = ["title", "url", "long_snippet"]
-            # template = "Result {position}\nTitle: {title}\nURL: {url}\n{long_snippet}"
-            template = "<Search Result {position}>\n<Title: {title}>\n<URL: {url}>\n{long_snippet}\n</Search Result {position}>"
-
-        # for some websites, we may not be able to scrape the page content
-        results = [r for r in results if all(k in r for k in keys) and all(not isinstance(r[k], str) or len(r[k]) > 0 for k in keys)][:topk]
-        results = [{**r, "position": i+1} for i, r in enumerate(results)]
-        return f"The search engine returned {len(results)} results:\n\n" + "\n\n".join([template.format(**r) for r in results])
+        for res in results:
+            s += f"<Result {res.position}>\n<URL>{res.id}</URL>\n"
+            if res.title is not None:
+                s += f"<Title>{res.title}</Title>\n"
+            if res.text is not None:
+                s += f"<Snippet>\n{res.text}\n</Snippet>\n"
+            s += f"</Result {res.position}>\n\n"
+        return s
 
 
 class EndPointRetriever(Retriever):
@@ -302,7 +321,6 @@ def load_retriever(
     elif retriever_options.retriever_type == "web":
         return WebSearchRetriever(
             api_key=retriever_options.api_key,
-            use_cache=retriever_options.use_cache,
             web_scraping=retriever_options.web_scraping,
             verbose=retriever_options.verbose,
         )

@@ -13,7 +13,7 @@ from transformers import PreTrainedTokenizerBase
 import datasets
 from torch.utils.data import Dataset, DataLoader
 import datatools
-from datatools.io_utils import zstd_utf8_read_open
+from datatools.io_utils import zstd_utf8_read_open, Subset
 
 from retrievaltools.arguments import CorpusOptions, ShardOptions
 from retrievaltools.utils import get_shard_idx, init_logger
@@ -23,7 +23,7 @@ logger = init_logger(__name__)
 
 class Corpus():
     """
-    In a basic corpus, we assume that the data is already processed and we don't need to do any additional processing
+    Assuem data is already processed: each instance in the dataset corresponds to a document.
     """
 
     def __init__(
@@ -47,39 +47,34 @@ class Corpus():
         else:
             self.shard_options = ShardOptions(num_shards=1, shard_id=0)
 
+        # load the paths and shard accordingly
+        if self.shard_options.shard_files:
+            assert len(paths) >= self.shard_options.num_shards, "If shard_files is True, then the number of paths must be >= the number of shards"
+            start_idx, end_idx = get_shard_idx(len(paths), self.shard_options.num_shards, self.shard_options.shard_id)
+            self.paths = self.paths[start_idx:end_idx]
+
         self.num_workers = num_workers
-        if num_workers <= 1:
-            mappings = [self.add_path(p) for p in paths]
-        else:
-            mappings = process_map(self.add_path, paths, max_workers=num_workers, desc="Adding paths to corpus")
-
-        for m in mappings:
-            self.data.update(m)
-
-    
-    def add_path(self, path: Union[Path, str]):
-        data = datatools.load(path)
-        # we support sharding within the file as well in case the file is very large
-        start_idx, end_idx = get_shard_idx(len(data), self.shard_options.num_shards, self.shard_options.shard_id)
-        mappings = {}
-        if isinstance(data, datasets.Dataset):
-            data = data.select(range(start_idx, end_idx))
-        else:
-            data = data[start_idx:end_idx]
-
-        for idx, d in tqdm(enumerate(data), desc=f"Processing {path}", total=len(data), disable=self.num_workers > 1):
-            id = d[self.id_field]
-            text = d[self.text_field]
-            # TODO: move the dataset filter somewhere else?
-            if text is None:
-                continue
-            metadata = {k: d[k] for k in self.metadata_fields}
-            mappings[id] = {"text": text, **metadata}
-        return mappings
-
+        data = datatools.load(*self.paths)
+        if not self.shard_options.shard_files:
+            data = Subset.shard(data, num_shards=self.shard_options.num_shards, shard_id=self.shard_options.shard_id)
+            
+        self.data = {}
+        for i, d in enumerate(data):
+            if self.id_field is None:
+                sample_id = i
+            else:
+                sample_id = d[self.id_field]
+            self.data[sample_id] = {"text": d[self.text_field], **{k: d[k] for k in self.metadata_fields}}
+        
+        logger.info(f"Loaded {len(self.data)} documents in the corpus")
+        
 
     def get_item(self, id: str):
         return self.data[id]
+    
+    
+    def get_text(self, id: str) -> str:
+        return self.data[id][self.text_field]
 
 
     def __len__(self):
@@ -151,6 +146,7 @@ class ChunkedCorpus():
         self.count_only: bool = count_only
 
         self.num_workers = num_workers
+
         if num_workers <= 1:
             mappings = [self.add_path(p) for p in paths]
         else:

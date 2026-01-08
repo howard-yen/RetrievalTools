@@ -1,0 +1,10 @@
+model_options:
+  model_name_or_path: /mnt/data-gcp/users/howard/models/Qwen3-Embedding-0.6B
+  # supports upto 32k, but too long can still cause degradation
+  input_max_length: 8192
+  use_hf: true
+  pooling: "last"
+  normalize_embedding: true
+  batch_size: 128
+  passage_prompt: ""
+  query_prompt: "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery:"

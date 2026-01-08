@@ -15,26 +15,17 @@ from data import Corpus, load_corpus
 logger = init_logger(__name__)
 
 
-def load_data(corpus_options: CorpusOptions, shard_options: ShardOptions):
-    paths = corpus_options.paths
-    assert len(paths) > 0 
-
-    # a limitation of our current implementation is that if there are not many files, then the shards may be uneven.
-    # for example, there are 450 files, but we want to parallelize over 400 shards, then some shards would have 1 file while others have 2.
-    # a better approach would be to load the corpus in a streaming fashion, that would be make easy to shard along the passage level 
-    if len(paths) >= shard_options.num_shards:
-        start_idx, end_idx = get_shard_idx(len(paths), shard_options.num_shards, shard_options.shard_id) 
-        corpus_options.paths = paths[start_idx:end_idx]
-        data = load_corpus(corpus_options)
-       
-    else:
-        # if there are more shards than paths, then we load everything first and then shard on a passage level 
-        # expect a single and shard within the file
-        data = load_corpus(corpus_options, shard_options=shard_options)
-
-    chunks = data.get_data()
+def load_corpus(corpus_options: CorpusOptions, shard_options: ShardOptions):
+    corpus = Corpus(
+        paths=corpus_options.paths, 
+        id_field=corpus_options.id_field, 
+        text_field=corpus_options.text_field, 
+        metadata_fields=corpus_options.metadata_fields, 
+        num_workers=corpus_options.num_workers, 
+        shard_options=shard_options
+    )
+    chunks = corpus.get_data()
     ids, texts = list(chunks.keys()), list(chunks.values())
-
     return ids, texts
 
 
@@ -45,7 +36,7 @@ def main(args):
         logger.info(f"File {save_file} already exists, skipping.")
         return
 
-    ids, texts = load_data(args.corpus_options, args.shard_options)
+    ids, texts = load_corpus(args.corpus_options, args.shard_options)
     raw_texts = [texts['text'] for texts in texts]
     logger.info(f"Loaded {len(ids)} passages")
     encoder = load_encoder(args.model_options)

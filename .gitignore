@@ -6,6 +6,7 @@ env/
 embeddings/
 *_env/
 joblog/
+retrievaltools/cache
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

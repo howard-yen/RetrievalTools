@@ -8,8 +8,9 @@ from tqdm import trange, tqdm
 from torch.utils.data import DataLoader
 
 from transformers import AutoConfig, AutoModel, AutoTokenizer, DataCollatorWithPadding
+from vllm import LLM
 
-from retrievaltools.data import CorpusDataset, LengthSortedCollator
+from retrievaltools.corpus import CorpusDataset, LengthSortedCollator
 from retrievaltools.utils import POOLING_FUNC, init_logger
 from retrievaltools.arguments import ModelOptions
 
@@ -45,7 +46,7 @@ class Encoder():
         self.ctx_size = ctx_size
         self.batch_size = batch_size
         self.dtype = dtype
-        self.torch_dtype = dtype if dtype in ["auto", None] else getattr(torch, dtype)
+        self.dtype = dtype if dtype in ["auto", None] else getattr(torch, dtype)
     
     def encode(self, context: List[str], prompt: str = "") -> np.array:
         raise NotImplementedError
@@ -74,7 +75,7 @@ class STEncoder(Encoder):
             model_name_or_path, 
             device="cuda", 
             trust_remote_code=True,
-            model_kwargs={"trust_remote_code": True, "torch_dtype": self.torch_dtype, **model_kwargs},
+            model_kwargs={"trust_remote_code": True, "dtype": self.dtype, **model_kwargs},
             tokenizer_kwargs={"trust_remote_code": True}
         ).eval()
         self.tokenizer = self.model.tokenizer
@@ -137,16 +138,20 @@ class HFEncoder(Encoder):
         assert pooling in POOLING_FUNC, "Pooling must be one of 'mean', 'cls', 'max', 'last'"
         self.pooling = POOLING_FUNC[pooling]
 
-    
         self.config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
         self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
         self.model = AutoModel.from_pretrained(
             model_name_or_path, 
-            torch_dtype=self.torch_dtype,
+            dtype=self.dtype,
             trust_remote_code=True,
             device_map="auto",
             **model_kwargs,
         ).eval()
+
+        # self.model.to("cuda")
+        # if torch.cuda.device_count() > 1:
+        #     self.model = torch.nn.DataParallel(self.model, output_device=torch.device("cpu")) # can't put cpu but if all outputs go to one gpu, it may run out of memory
+        #     self.batch_size *= torch.cuda.device_count()
         
         if ctx_size is None:
             logger.info(f"Setting ctx_size to model max_position_embeddings {self.config.max_position_embeddings}")
@@ -178,8 +183,10 @@ class HFEncoder(Encoder):
         for batch_idx, (batch, length_idxs) in enumerate(tqdm(dataloader, desc="Encoding")):
             batch_embeddings = []
             for mini_batch in tqdm(batch, leave=False, desc="Mini-batch"):
-                inputs = mini_batch.to(self.model.device)
-                outputs = self.model(**inputs.to(self.model.device))
+                device = self.model.module.device if hasattr(self.model, "module") else self.model.device
+                # device = "cpu"
+                inputs = mini_batch.to(device)
+                outputs = self.model(**inputs)
 
                 embeddings = self.pooling(outputs.last_hidden_state, inputs["attention_mask"])
 
@@ -201,6 +208,31 @@ class HFEncoder(Encoder):
         return self.config.hidden_size
 
 
+class VLLMEncoder(Encoder):
+    def __init__(
+        self,
+        model_name_or_path: str,
+        ctx_size: Optional[int] = None,
+        batch_size: int = 32,
+        dtype: str = "float16",
+    ):
+        super().__init__(model_name_or_path, ctx_size, batch_size, dtype)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True)
+        self.model = LLM(
+            model=model_name_or_path, 
+            task="embed",
+            enforce_eager=True,
+            dtype=self.torch_dtype,
+        )
+    
+    def encode(self, context: List[str], prompt: str = "") -> np.array:
+        allemb = []
+
+    @property
+    def hidden_size(self) -> int:
+        raise NotImplementedError
+
+
 def load_encoder(
     model_options: ModelOptions,
 ) -> Encoder:
@@ -209,10 +241,10 @@ def load_encoder(
         kwargs = {}
         if "gte" in model_options.model_name_or_path:
             kwargs = {}
-            if 'gte-qwen2-1.5b-instruct' in model_options.model_name_or_path.lower():
-                kwargs["attn_implementation"] = "flash_attention_2"
-            elif 'gte-large-en-v1.5' in model_options.model_name_or_path.lower():
+            # kwargs["attn_implementation"] = "flash_attention_2"
+            if 'gte-large-en-v1.5' in model_options.model_name_or_path.lower():
                 kwargs.update({"unpad_inputs": True, "use_memory_efficient_attention": True})
+
         return HFEncoder(
             model_options.model_name_or_path, 
             ctx_size=model_options.input_max_length, 
