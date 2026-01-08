@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "retrievaltools-py"
+version = "0.1"
+authors = [
+    { name = "Howard Yen" }
+]
+description = "Library and scripts for common retrieval utilities (generating dense embeddings, faiss index, web search, etc.)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "wheel>=0.45.1,<0.46",
+    "pycli>=2.0.3,<3",
+    "tqdm>=4.66.1",
+    "numpy>=1.26.4",
+    "pandas>=2.3.3,<3",
+    "simple_parsing>=0.1.5",
+    "fastapi>=0.115.2",
+    "uvicorn>=0.31.0",
+    "requests>=2.31.0",
+    "dataclasses-json>=0.6.2",
+    "psutil>=6.0.0",
+    "beautifulsoup4>=4.13.0",
+    "pymupdf>=1.25.5",
+    "ninja>=1.13.0,<2",
+    "transformers>=4.57.3,<5",
+    "flash-attn>=2.8.3,<3",
+    "datasets>=4.4.0",
+    "rouge-score>=0.1.2,<0.2",
+    "accelerate>=1.12.0,<2",
+    "vllm>=0.10.1.1, <0.11",
+    "datatools-py",
+    "bm25s[full]>=0.2.14",
+    "pystemmer>=3.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/howard-yen/RetrievalTools"
+Repository = "https://github.com/howard-yen/RetrievalTools"
+
+[project.scripts]
+serve_retriever = "retrievaltools.serve_retriever:main"
+generate_embeddings = "retrievaltools.generate_passage_embeddings:main"
+passage_retrieval = "retrievaltools.passage_retrieval:main"
+
+[tool.setuptools.packages.find]
+include = ["retrievaltools*"]
+
+[tool.uv.sources]
+datatools-py = { path = "../datatools", editable = true }
+
+[tool.uv]
+no-build-isolation-package = ["flash-attn"]

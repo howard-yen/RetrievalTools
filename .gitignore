@@ -174,4 +174,6 @@ configs/_*
 slurm
 
 *.ipynb
-gty*
+gty*# pixi environments
+.pixi/*
+!.pixi/config.toml

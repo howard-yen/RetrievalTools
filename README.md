@@ -32,10 +32,30 @@ We also provide a simple API for playing around with different retrieval models 
 
 ## Installation
 
-You should set up a virtual environment with all the dependencies. Then, you can install the package with:
+We highly recommend using [pixi](https://pixi.prefix.dev/latest/) and [uv](https://docs.astral.sh/uv/) to manage the dependencies.
+If you are looking to serve dense indices with FAISS, then you can set up the environment with:
+
 ```bash
-pip install -e .
+pixi install
+pixi shell # to activate the environment
 ```
+
+You may want to double check that you can import everything correctly:
+```python
+import faiss
+faiss.GpuClonerOptions # check that we can import this
+print(faiss.get_num_gpus()) # check that this is not 0 when there is a GPU available
+from flash_attn import flash_attn_qkvpacked_func, flash_attn_func
+from transformers import AutoModel, AutoTokenizer, AutoConfig
+```
+
+If you don't need the `faiss-gpu` package, we recommend using uv:
+```bash
+uv sync
+# or if you prefer to use just pip, do the following in your environment
+pip install -e . 
+```
+
 
 Then, you should be able to import the package with:
 ```python
@@ -45,27 +65,8 @@ import retrievaltools as rt
 retriever = rt.load_retriever(rt.RetrieverOptions(retriever_type="web_search", cache_path="cache/serper.json"))
 ```
 
-We use FAISS to support different types of dense indices; however, it can be tricky to get the environment exactly right.
-In practice, I find it easier to use a separate conda environment specifically for running FAISS GPU.
 
-### Without FAISS
-
-For simple encoding, you may not need FAISS, and you can install all packages with:
-
-```bash
-pip install -r requirements.txt
-```
-
-You should install `torch` following [these instructions](https://pytorch.org/get-started/locally/) to match your CUDA version.
-
-### FAISS
-
-FAISS is critical for the retrieval step if you are using a dense index; it is responsible for fast indexing and supports many useful functions (e.g., quantization, multi-gpu index, etc.).
-To install the package, you should set up a conda environment and install PyTorch and FAISS (guide [here](https://github.com/facebookresearch/faiss/blob/main/INSTALL.md)).
-Additionally, you should install `transformers` and `sentence-transformers`.
-You also want to install `datatools` [here](https://github.com/CodeCreator/datatools).
-
-## Usage Examples
+## Encoding
 
 The stages of retrieval are as follows for single-vector dense retrievers (e.g., DPR, Contriever, etc.):
 1. **Embedding the corpus** (`generate_passage_embeddings.py`): Encode the corpus into dense vectors
@@ -84,9 +85,42 @@ wget https://dl.fbaipublicfiles.com/dpr/wikipedia_split/psgs_w100.tsv.gz
 gunzip psgs_w100.tsv.gz
 ```
 
+2. **Encode the corpus**: Use the `generate_passage_embeddings.py` script to encode the corpus. You may see `scripts/gen_emb.sh` for an example.
+```bash
+# remember to activate your environment
+python generate_passage_embeddings.py \
+    --config configs/models/qwen3-0.6b.yaml configs/corpus/wiki.yaml \
+    --output_dir embeddings/qwen3-0.6b/wikipedia \
+    --output_prefix wiki \
+    --shard_id 0 --num_shards 100 \
+    --input_max_length 512 \
+    --batch_size 256 
+```
+
+In the config files, you may specify things like:
+```yaml
+# wiki corpus configs
+corpus_options:
+  paths: # support global/local paths and glob patterns
+    - data/psgs_w100.tsv
+    - data/wiki*.jsonl.gz
+  text_field: text
+  metadata_fields: [title]
+  num_workers: 8
+
+# qwen model config
+
+```
+
 ### Large Corpora 
 
 When building a large retrieval corpus (>500M documents or >100B tokens), it is often necessary to shard the corpus and parallelize the encoding process.
+
+## Indexing
+
+We support indexing with FAISS, and with paralleization across GPUs.
+
+
 
 ## TODOs
 
