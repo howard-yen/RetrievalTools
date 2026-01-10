@@ -163,7 +163,7 @@ def detect_content_type(url: str) -> str:
         return "html"
 
 
-def find_snippet(texts: List[str], snippet: str, num_characters: int = 4000, scoring_func: str = "rouge"):
+def find_snippet(text: str, snippet: str, num_characters: int = 4000, scoring_func: str = "rouge", chunking_func: str = "newline"):
     """
     We iterate through the texts, break them into chunks of 1000 characters, and then use the scoring function to find the best chunk.
     The text is already split into arbitrary chunks.
@@ -171,6 +171,20 @@ def find_snippet(texts: List[str], snippet: str, num_characters: int = 4000, sco
     We also take the surrounding text of the snippet to fill up the num_characters.
     """
     assert scoring_func in ["rouge", "bm25"], "Scoring function must be either 'rouge' or 'bm25'"
+
+    if chunking_func == "newline":
+        texts = text.split("\n")    
+        texts = [t.strip() for t in texts if t.strip()]
+    elif "word" in chunking_func:
+        num_words = int(chunking_func.split("_")[1])
+        # TODO: replace split space with nltk or spacy
+        content_lines = text.split(" ")
+        content_lines = [line for line in content_lines if line.strip()]
+        content_lines = [content_lines[i:i+num_words] for i in range(0, len(content_lines), num_words)]
+        texts = [" ".join(line) for line in content_lines]
+    else:
+        raise ValueError(f"Chunking function must be either 'newline' or 'word_<num>', got {chunking_func}")
+    
     positions = []
     start = 0
     best_recall = 0

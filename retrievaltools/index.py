@@ -24,7 +24,8 @@ class Indexer(object):
         vector_sz: int, 
         n_subquantizers: int = 0, 
         n_bits: int = 8, 
-        dtype: str = "float16"
+        dtype: str = "float16",
+        tqdm: bool = True,
     ):
         """
         Intialize the indexer
@@ -36,7 +37,9 @@ class Indexer(object):
         self.index_id_to_db_id = []
         self.index_id_to_text = []
         self.dtype = dtype
-
+        self.tqdm = tqdm
+        
+        
     def to_gpu(self):
         """
         Move the index to multiple GPUs if available
@@ -48,6 +51,7 @@ class Indexer(object):
         co.shard = True
         index_gpu = faiss.index_cpu_to_gpu_multiple_py(resources, self.index, co=co)
         self.index = index_gpu
+
 
     def index_data(self, ids: List[str], embeddings: np.array, texts: List[str] = None):
         """
@@ -65,6 +69,7 @@ class Indexer(object):
 
         logger.info(f'Total data indexed {len(self.index_id_to_db_id)}')
 
+
     def search_knn(self, query_vectors: np.array, top_docs: int, index_batch_size: int = 2048) -> List[Dict[str, List[Any]]]:
         """
         Returns a list of lists of dictionaries containing the external ids, scores, and texts of the top documents
@@ -73,7 +78,7 @@ class Indexer(object):
         query_vectors = query_vectors.astype(self.dtype)
         result = []
         nbatch = (len(query_vectors)-1) // index_batch_size + 1
-        for k in tqdm(range(nbatch), desc="searching knn", disable=nbatch<5):
+        for k in tqdm(range(nbatch), desc="searching knn", disable=nbatch<5 or not self.tqdm):
             start_idx = k*index_batch_size
             end_idx = min((k+1)*index_batch_size, len(query_vectors))
             q = query_vectors[start_idx: end_idx]
@@ -157,6 +162,7 @@ class DenseIndex():
         n_subquantizers: int = 0,
         n_bits: int = 8,
         embedding_files: List[str] = [],
+        tqdm: bool = True,
     ):
         """
         Initialize the DenseIndex
@@ -175,13 +181,14 @@ class DenseIndex():
         self.torch_dtype = dtype if dtype in ["auto", None] else getattr(torch, dtype)
         self.dtype = dtype
         self.batch_size = batch_size
-
+        self.tqdm = tqdm
         # add quantization support here
         self.index = Indexer(
             dtype=dtype, 
             vector_sz=self.hidden_size, 
             n_subquantizers=n_subquantizers,
             n_bits=n_bits,
+            tqdm=tqdm,
         )
 
         if len(embedding_files) > 0:
@@ -278,5 +285,6 @@ def load_index(index_options: IndexOptions, encoder=None):
         n_bits=index_options.n_bits,
         batch_size=index_options.batch_size,
         embedding_files=index_options.embedding_files,
+        tqdm=index_options.tqdm,
     )
     return index

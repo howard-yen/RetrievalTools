@@ -132,6 +132,7 @@ class HFEncoder(Encoder):
         dtype: str = "float16",
         pooling: str = "mean", # other options: "cls", "max", "last"
         normalize_embedding: bool = False,
+        tqdm: bool = True,
         **model_kwargs
     ):
         super().__init__(model_name_or_path, ctx_size, batch_size, dtype)
@@ -160,6 +161,8 @@ class HFEncoder(Encoder):
             logger.warning(f"ctx_size {ctx_size} is greater than model max_seq_length {self.model.max_position_embeddings}, this may return unexpected results")
 
         self.normalize_embedding = normalize_embedding
+        self.tqdm = tqdm
+
 
     @torch.no_grad()
     def encode(self, context: List[str], prompt: str = "") -> np.array:
@@ -180,9 +183,9 @@ class HFEncoder(Encoder):
             collate_fn=collator
         )
 
-        for batch_idx, (batch, length_idxs) in enumerate(tqdm(dataloader, desc="Encoding")):
+        for batch_idx, (batch, length_idxs) in enumerate(tqdm(dataloader, desc="Encoding", disable=not self.tqdm)):
             batch_embeddings = []
-            for mini_batch in tqdm(batch, leave=False, desc="Mini-batch"):
+            for mini_batch in tqdm(batch, leave=False, desc="Mini-batch", disable=not self.tqdm):
                 device = self.model.module.device if hasattr(self.model, "module") else self.model.device
                 # device = "cpu"
                 inputs = mini_batch.to(device)
@@ -251,6 +254,7 @@ def load_encoder(
             batch_size=model_options.batch_size, 
             pooling=model_options.pooling,
             normalize_embedding=model_options.normalize_embedding,
+            tqdm=model_options.tqdm,
             **kwargs
         )
     

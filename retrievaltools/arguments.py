@@ -33,6 +33,9 @@ class ModelOptions:
     passage_prompt: str = "" # text to prepend to the passage
     normalize_embedding: bool = False
 
+    # misc settings
+    tqdm: bool = True
+
     def __post_init__(self):
         assert self.model_name_or_path is not None, "model_name_or_path must be set"
 
@@ -84,6 +87,7 @@ class IndexOptions:
     batch_size: int = 2048 # Batch size for index search
     no_fp16: bool = False # Inference in fp32 instead of fp16 (not necessary most times)
     embedding_files: str | List[str] = field(default_factory=list)
+    tqdm: bool = True
 
     def __post_init__(self):
         if isinstance(self.embedding_files, str):

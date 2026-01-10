@@ -74,6 +74,8 @@ class Corpus():
     
     
     def get_text(self, id: str) -> str:
+        if id not in self.data:
+            return f"Cannot find the document {id}, please check if the id is correct."
         return self.data[id][self.text_field]
 
 

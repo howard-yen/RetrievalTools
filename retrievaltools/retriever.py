@@ -12,7 +12,7 @@ from tqdm import tqdm
 from diskcache import Cache
 
 from retrievaltools.arguments import CorpusOptions, IndexOptions, ModelOptions, RetrieverOptions
-from retrievaltools.utils import init_logger, serper_search, scrape_pdf, scrape_html, detect_content_type
+from retrievaltools.utils import init_logger, serper_search, scrape_pdf, scrape_html, detect_content_type, find_snippet
 
 logger = init_logger(__name__)
 cache = Cache(os.environ.get("RT_CACHE_PATH", "./cache"))
@@ -105,7 +105,9 @@ class DenseRetriever(Retriever):
             assert encoder_options is not None and index_options is not None, "encoder_options and index_options must be provided if index is not provided"
             from retrievaltools.encoder import load_encoder
             from retrievaltools.index import load_index
+            encoder_options.tqdm = False
             encoder = load_encoder(encoder_options)
+            index_options.tqdm = False
             self.index = load_index(index_options, encoder)
         else:
             self.index = index
@@ -116,7 +118,7 @@ class DenseRetriever(Retriever):
         if corpus is not None:
             self.corpus = corpus
         elif corpus_options is not None:
-            from retrievaltools.data import load_corpus
+            from retrievaltools.corpus import load_corpus
             self.corpus = load_corpus(corpus_options)
 
         self.snippet_length = snippet_length

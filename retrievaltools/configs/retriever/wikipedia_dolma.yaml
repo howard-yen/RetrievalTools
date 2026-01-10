@@ -4,6 +4,7 @@ retriever_options:
   host: localhost
   port: 8000
   snippet_length: 100
+  include_corpus: true
 
 
 model_options:
